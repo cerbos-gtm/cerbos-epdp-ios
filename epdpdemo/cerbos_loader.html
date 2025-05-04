@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerbos Loader</title>
+    <style>
+        /* Optional: Some basic styling if you want to debug visually */
+        body { font-family: sans-serif; padding: 10px; }
+        #cerbos-status { background-color: #eee; padding: 5px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <!-- Status div for visual debugging in Safari Inspector -->
+    <div id="cerbos-status">Initializing...</div>
+
+    <script type="module">
+        // --- Bridge Setup ---
+        const bridge = window.webkit?.messageHandlers?.iosBridge;
+
+        function postToSwift(message) {
+            if (bridge && bridge.postMessage) {
+                 // console.log("JS -> Swift:", JSON.stringify(message)); // Debugging
+                bridge.postMessage(message);
+            } else {
+                console.error("iOS Bridge (iosBridge) not found or postMessage is missing.");
+                // Update status visually for debugging
+                document.getElementById("cerbos-status").innerText = "Error: iOS Bridge Missing!";
+            }
+        }
+
+        // --- Overwrite console.log/error to route to Swift (optional but helpful) ---
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+        console.log = (...args) => {
+            originalConsoleLog.apply(console, args); // Keep original browser console logging
+            postToSwift({ type: "log", payload: args.map(arg => String(arg)).join(' ') });
+        };
+        console.error = (...args) => {
+            originalConsoleError.apply(console, args); // Keep original browser console logging
+            const errorMessage = args.map(arg => (arg instanceof Error) ? arg.stack || arg.message : String(arg)).join(' ');
+            postToSwift({ type: "log", level: "error", payload: errorMessage }); // Distinguish errors
+        };
+
+        console.log("Cerbos JS module loading...");
+        document.getElementById("cerbos-status").innerText = "Loading Cerbos SDK...";
+
+        // --- Cerbos SDK Import ---
+        try {
+            // Ensure you are using the correct import path
+            const Cerbos = await import("https://esm.run/@cerbos/embedded@0.11");
+            const { Embedded, AutoUpdatingLoader } = Cerbos; // Destructure if needed, or use Cerbos.Embedded
+
+            console.log("Cerbos SDK module loaded successfully.");
+            document.getElementById("cerbos-status").innerText = "Cerbos SDK Loaded.";
+
+            // --- Global Cerbos Instance ---
+            window.cerbosInstance = null; // Hold the instance globally
+
+            // --- Function called by Swift to load the PDP ---
+            window.loadCerbosPDP = async (bundleUrl) => {
+                console.log(`JS: loadCerbosPDP called with URL: ${bundleUrl}`);
+                document.getElementById("cerbos-status").innerText = `Loading PDP from ${bundleUrl}...`;
+                if (window.cerbosInstance) {
+                    console.warn("JS: Cerbos PDP instance already exists. Re-creating.");
+                    // Potentially add cleanup logic here if the SDK provides it
+                }
+
+                try {
+                    window.cerbosInstance = new Embedded( // Or Cerbos.Embedded
+                        new AutoUpdatingLoader(bundleUrl, { // Or Cerbos.AutoUpdatingLoader
+                            onLoad: (metadata) => {
+                                console.log("JS: Cerbos PDP Loaded. Metadata:", JSON.stringify(metadata));
+                                document.getElementById("cerbos-status").innerText = "Cerbos PDP Ready.";
+                                postToSwift({ type: "pdpReady" }); // Signal Swift: PDP is Ready
+                            },
+                            onError: (error) => {
+                                console.error("JS: Cerbos PDP Loading Error Callback Triggered.");
+                                console.error("JS: Full load error object:", error); // <-- Log the whole object
+                                const errorMsg = error?.message || String(error);
+                                console.error("JS: Error message extracted:", errorMsg);
+                                document.getElementById("cerbos-status").innerText = `Error loading PDP: ${errorMsg}`;
+                                postToSwift({ type: "pdpError", payload: `Failed to load embedded policy decision point bundle: Failed to download from ${bundleUrl}: ${errorMsg}` }); // Send detailed msg
+                            }
+                            // Optional: Enable decision logs if needed by the Swift side
+                             //onDecision: (log) => {
+                               //  try {
+                                 //    postToSwift({ type: "decisionLog", payload: JSON.stringify(log) });
+                                 //} catch (e) {
+                                   //  console.error("JS: Failed to stringify decision log:", e);
+                                 //}
+                             //}
+                        })
+                    );
+                    console.log("JS: Cerbos Embedded instance created.");
+                    document.getElementById("cerbos-status").innerText = "Cerbos Instance Created.";
+
+                } catch (err) {
+                    const errorMsg = err?.message || String(err);
+                    console.error("JS: Failed to instantiate Cerbos Embedded:", errorMsg);
+                    document.getElementById("cerbos-status").innerText = `Error Instantiating Embedded: ${errorMsg}`;
+                    postToSwift({ type: "pdpError", payload: `Instantiation failed: ${errorMsg}` }); // Signal Swift: Error
+                }
+            };
+
+            // --- Function called by Swift for authorization checks ---
+            // Note: This now takes callId to correlate response
+            window.performCheckResources = async (callId, requestJson) => {
+                 console.log(`JS: performCheckResources called [${callId}]`);
+                 if (!window.cerbosInstance) {
+                    const errorMsg = "Cerbos PDP instance not ready.";
+                    console.error(`JS [${callId}]:`, errorMsg);
+                    postToSwift({ type: "response", callId: callId, error: errorMsg });
+                    return;
+                 }
+
+                 try {
+                    const request = JSON.parse(requestJson); // Parse the request JSON string
+                    console.log(`JS [${callId}]: Performing checkResources...`, request); // Be mindful of logging sensitive data
+                    const response = await window.cerbosInstance.checkResources(request);
+                    console.log(`JS [${callId}]: checkResources response received.`);
+                    // Post successful response back to Swift
+                    postToSwift({ type: "response", callId: callId, payload: JSON.stringify(response) });
+                 } catch (error) {
+                     const errorMsg = error?.message || String(error);
+                     console.error(`JS [${callId}]: Error during checkResources:`, errorMsg, error.stack);
+                     // Post error response back to Swift
+                     postToSwift({ type: "response", callId: callId, error: errorMsg });
+                 }
+            };
+
+            console.log("JS: Global functions (loadCerbosPDP, performCheckResources) defined.");
+            // Signal Swift that the core JS SDK is ready to receive the load command
+            postToSwift({ type: "sdkReady" });
+            document.getElementById("cerbos-status").innerText = "JS SDK Ready. Waiting for load command.";
+
+        } catch (importError) {
+             const errorMsg = importError?.message || String(importError);
+             console.error("JS: Failed to import Cerbos SDK module:", errorMsg);
+             document.getElementById("cerbos-status").innerText = `FATAL: Failed to import SDK: ${errorMsg}`;
+             postToSwift({ type: "sdkError", payload: `Failed to import SDK: ${errorMsg}` }); // Signal fatal SDK error
+        }
+
+      
+    </script>
+</body>
+</html>
