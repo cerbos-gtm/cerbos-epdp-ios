@@ -205,7 +205,9 @@ public final class CerbosEmbeddedPDP {
         return try await host.invoke("isAllowed", params: request, failure: { .request($0) })
     }
 
-    public func isAllowed(principal: Principal, resource: Resource, action: String, auxData: AuxData? = nil) async throws(CerbosError) -> Bool {
+    public func isAllowed(
+        principal: Principal, resource: Resource, action: String, auxData: AuxData? = nil
+    ) async throws(CerbosError) -> Bool {
         try await isAllowed(IsAllowedRequest(principal: principal, resource: resource, action: action, auxData: auxData))
     }
 
@@ -242,7 +244,8 @@ public final class CerbosEmbeddedPDP {
             server = result.server
             restartAttempts = 0
             status = .ready
-            CerbosLog.info("Cerbos embedded PDP ready (bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?"))")
+            CerbosLog.info(
+                "Cerbos embedded PDP ready (bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?"))")
         } catch {
             CerbosLog.error("Cerbos embedded PDP failed to start: \(error.localizedDescription)")
             status = .failed(error)
@@ -297,7 +300,8 @@ public final class CerbosEmbeddedPDP {
 
         case .bundle(let info):
             bundle = info
-            appendLog(level: "info", "Policy bundle \(info.bundleId) (revision \(info.ruleRevision)) loaded from \(info.source.rawValue)")
+            appendLog(
+                level: "info", "Policy bundle \(info.bundleId) (revision \(info.ruleRevision)) loaded from \(info.source.rawValue)")
 
         case .policyUpdate(let ok, let error, let info):
             lastPolicyUpdate = PolicyUpdate(date: Date(), error: error, bundle: info)

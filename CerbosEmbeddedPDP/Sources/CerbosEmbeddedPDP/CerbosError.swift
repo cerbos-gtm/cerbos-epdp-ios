@@ -38,7 +38,10 @@ public struct BridgeError: Sendable, Equatable, Codable {
     public var validationErrors: [ValidationError]?
     public var stack: String?
 
-    public init(name: String, message: String, code: Int? = nil, details: String? = nil, validationErrors: [ValidationError]? = nil, stack: String? = nil) {
+    public init(
+        name: String, message: String, code: Int? = nil, details: String? = nil, validationErrors: [ValidationError]? = nil,
+        stack: String? = nil
+    ) {
         self.name = name
         self.message = message
         self.code = code

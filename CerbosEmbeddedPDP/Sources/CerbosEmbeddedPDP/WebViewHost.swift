@@ -138,7 +138,8 @@ final class CerbosWebViewHost: NSObject {
         }
 
         guard let envelopeJSON = value as? String else {
-            throw CerbosError.invalidResponse(reason: "bridge returned \(value.map { String(describing: type(of: $0)) } ?? "nil") instead of a JSON string")
+            throw CerbosError.invalidResponse(
+                reason: "bridge returned \(value.map { String(describing: type(of: $0)) } ?? "nil") instead of a JSON string")
         }
         return try BridgeJSON.unwrap(Result.self, envelopeJSON: envelopeJSON, failure: failure)
     }
@@ -191,7 +192,10 @@ final class CerbosWebViewHost: NSObject {
 // MARK: - WKNavigationDelegate
 
 extension CerbosWebViewHost: WKNavigationDelegate {
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+    func webView(
+        _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
         // The page must never navigate anywhere but its own bundled resources.
         decisionHandler(navigationAction.request.url?.scheme == Self.scheme ? .allow : .cancel)
     }
@@ -267,7 +271,8 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
             let data = try? Data(contentsOf: directory.appendingPathComponent(name), options: .mappedIfSafe)
         else {
             CerbosLog.error("Bridge resource not found: \(url.absoluteString)")
-            let response = HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/plain"])!
+            let response = HTTPURLResponse(
+                url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/plain"])!
             urlSchemeTask.didReceive(response)
             urlSchemeTask.didFinish()
             return

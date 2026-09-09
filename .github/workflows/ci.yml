@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge:
+    name: Bridge (TypeScript, esbuild, smoke test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CerbosBridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: CerbosBridge/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Committed assets match the build
+        run: git diff --exit-code -- ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/bridge.js ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/server.wasm ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/index.html
+      - name: Smoke test against the real engine and Cerbos Hub
+        run: npm test
+
+  package-linux:
+    name: Swift package (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    defaults:
+      run:
+        working-directory: CerbosEmbeddedPDP
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift format lint --strict --recursive Sources Tests ../epdpdemo ../epdpdemoTests
+      - run: swift build
+      - run: swift test
+
+  apple:
+    name: Swift package and app (Xcode 26)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - name: Package tests (macOS)
+        run: swift test --package-path CerbosEmbeddedPDP
+      - name: Build and test the app on the iOS simulator
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | jq -r '[.devices[] | .[] | select(.name | startswith("iPhone"))][-1].udid')
+          echo "Simulator: $DEVICE"
+          xcodebuild test \
+            -project epdpdemo.xcodeproj \
+            -scheme epdpdemo \
+            -destination "id=$DEVICE" \
+            -only-testing:epdpdemoTests \
+            CODE_SIGNING_ALLOWED=NO

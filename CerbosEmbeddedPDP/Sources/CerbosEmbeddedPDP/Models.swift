@@ -86,7 +86,9 @@ public struct CheckResourcesRequest: Sendable, Hashable, Codable {
     public var includeMetadata: Bool
     public var requestId: String?
 
-    public init(principal: Principal, resources: [ResourceCheck], auxData: AuxData? = nil, includeMetadata: Bool = false, requestId: String? = nil) {
+    public init(
+        principal: Principal, resources: [ResourceCheck], auxData: AuxData? = nil, includeMetadata: Bool = false, requestId: String? = nil
+    ) {
         self.principal = principal
         self.resources = resources
         self.auxData = auxData
@@ -103,7 +105,10 @@ public struct CheckResourceRequest: Sendable, Hashable, Codable {
     public var includeMetadata: Bool
     public var requestId: String?
 
-    public init(principal: Principal, resource: Resource, actions: [String], auxData: AuxData? = nil, includeMetadata: Bool = false, requestId: String? = nil) {
+    public init(
+        principal: Principal, resource: Resource, actions: [String], auxData: AuxData? = nil, includeMetadata: Bool = false,
+        requestId: String? = nil
+    ) {
         self.principal = principal
         self.resource = resource
         self.actions = actions
@@ -157,7 +162,10 @@ public struct PlanResourcesRequest: Sendable, Hashable, Codable {
     public var includeMetadata: Bool
     public var requestId: String?
 
-    public init(principal: Principal, resource: PlanResource, actions: [String], auxData: AuxData? = nil, includeMetadata: Bool = false, requestId: String? = nil) {
+    public init(
+        principal: Principal, resource: PlanResource, actions: [String], auxData: AuxData? = nil, includeMetadata: Bool = false,
+        requestId: String? = nil
+    ) {
         self.principal = principal
         self.resource = resource
         self.actions = actions
@@ -166,8 +174,13 @@ public struct PlanResourcesRequest: Sendable, Hashable, Codable {
         self.requestId = requestId
     }
 
-    public init(principal: Principal, resource: PlanResource, action: String, auxData: AuxData? = nil, includeMetadata: Bool = false, requestId: String? = nil) {
-        self.init(principal: principal, resource: resource, actions: [action], auxData: auxData, includeMetadata: includeMetadata, requestId: requestId)
+    public init(
+        principal: Principal, resource: PlanResource, action: String, auxData: AuxData? = nil, includeMetadata: Bool = false,
+        requestId: String? = nil
+    ) {
+        self.init(
+            principal: principal, resource: resource, actions: [action], auxData: auxData, includeMetadata: includeMetadata,
+            requestId: requestId)
     }
 }
 
@@ -251,7 +264,10 @@ public struct CheckResult: Sendable, Hashable, Codable {
     public var metadata: CheckResultMetadata?
     public var outputs: [OutputResult]
 
-    public init(resource: ResourceIdentifier, actions: [String: Effect], validationErrors: [ValidationError] = [], metadata: CheckResultMetadata? = nil, outputs: [OutputResult] = []) {
+    public init(
+        resource: ResourceIdentifier, actions: [String: Effect], validationErrors: [ValidationError] = [],
+        metadata: CheckResultMetadata? = nil, outputs: [OutputResult] = []
+    ) {
         self.resource = resource
         self.actions = actions
         self.validationErrors = validationErrors

@@ -15,18 +15,45 @@ struct ContentView: View {
     @State private var lastDuration: Duration?
     @State private var checkError: String?
     @State private var isChecking = false
+    @State private var showsHubSettings = false
 
     var body: some View {
         NavigationStack {
             Form {
-                hubSection
                 statusSection
                 checkSection
                 if let pdp, !pdp.logs.isEmpty {
                     logsSection(pdp)
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("Cerbos ePDP")
+            .navigationSubtitle(subtitle)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Cerbos Hub settings", systemImage: "slider.horizontal.3") {
+                        showsHubSettings = true
+                    }
+                }
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+                ToolbarItem(placement: .primaryAction) {
+                    Menu("More", systemImage: "ellipsis") {
+                        Button("Restart", systemImage: "arrow.clockwise") {
+                            Task { await startPDP() }
+                        }
+                        .disabled(pdp?.status == .loading)
+                        Button("Clear offline cache", systemImage: "trash", role: .destructive) {
+                            Task { await pdp?.clearOfflineCache() }
+                        }
+                        .disabled(pdp == nil)
+                    }
+                }
+            }
+            .sheet(isPresented: $showsHubSettings) {
+                HubSettingsView(ruleId: $ruleId, hubBaseURL: $hubBaseURL, clientId: $clientId, clientSecret: $clientSecret) {
+                    Task { await startPDP() }
+                }
+            }
             .task {
                 if pdp == nil {
                     await startPDP()
@@ -40,72 +67,54 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Sections
-
-    private var hubSection: some View {
-        Section {
-            LabeledContent("Rule ID") {
-                TextField("From the Embedded PDP rules tab", text: $ruleId)
-                    .multilineTextAlignment(.trailing)
-                    .textInputAutocapitalization(.characters)
-                    .autocorrectionDisabled()
-            }
-            LabeledContent("Hub URL") {
-                TextField("https://api.cerbos.cloud", text: $hubBaseURL)
-                    .multilineTextAlignment(.trailing)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-            LabeledContent("Client ID") {
-                TextField("Optional", text: $clientId)
-                    .multilineTextAlignment(.trailing)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-            LabeledContent("Client secret") {
-                SecureField("Optional", text: $clientSecret)
-                    .multilineTextAlignment(.trailing)
-            }
-            Button(pdp == nil ? "Start" : "Restart with these settings") {
-                Task { await startPDP() }
-            }
-            .disabled(ruleId.trimmingCharacters(in: .whitespaces).isEmpty || pdp?.status == .loading)
-        } header: {
-            Text("Cerbos Hub")
-        } footer: {
-            Text("Public rules need only the rule ID. Rules with client-credential authentication also need a client ID and secret (stored in the Keychain).")
+    private var subtitle: String {
+        if let server = pdp?.server {
+            return "Cerbos \(server.version) · rule \(ruleId)"
         }
+        return "rule \(ruleId)"
     }
+
+    // MARK: Sections
 
     @ViewBuilder
     private var statusSection: some View {
-        Section("Embedded PDP") {
+        Section {
             if let pdp {
-                StatusRow(status: pdp.status)
+                StatusBanner(status: pdp.status)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+
                 if let bundle = pdp.bundle {
                     LabeledContent("Bundle", value: bundle.bundleId)
                     LabeledContent("Rule revision", value: bundle.ruleRevision)
                     LabeledContent("Loaded from", value: bundle.source == .cache ? "Offline cache" : "Cerbos Hub")
                     LabeledContent("Received", value: bundle.receivedAt.formatted(date: .omitted, time: .standard))
                 }
-                if let server = pdp.server {
-                    LabeledContent("Engine", value: "Cerbos \(server.version)")
-                }
                 if let update = pdp.lastPolicyUpdate {
                     LabeledContent("Last update check") {
-                        Text(update.succeeded ? "OK" : "Failed")
-                            .foregroundStyle(update.succeeded ? .secondary : .red)
-                        + Text(" · \(update.date.formatted(date: .omitted, time: .shortened))")
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            Image(systemName: update.succeeded ? "checkmark.circle" : "exclamationmark.triangle")
+                                .foregroundStyle(update.succeeded ? .green : .orange)
+                            Text(update.date.formatted(date: .omitted, time: .shortened))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                Button("Clear offline cache", role: .destructive) {
-                    Task { await pdp.clearOfflineCache() }
+                if case .failed = pdp.status {
+                    Button("Try again", systemImage: "arrow.clockwise") {
+                        Task { await pdp.start() }
+                    }
                 }
             } else {
-                Text("Not started").foregroundStyle(.secondary)
+                ContentUnavailableView(
+                    "Not started", systemImage: "shield.slash", description: Text("Configure a Cerbos Hub rule to load policies."))
             }
+        } header: {
+            Text("Embedded PDP")
+        } footer: {
+            Text(
+                "Policies are downloaded from Cerbos Hub and evaluated on this device. The last bundle is cached so the app starts offline."
+            )
         }
     }
 
@@ -120,20 +129,25 @@ struct ContentView: View {
             Picker("Role", selection: $scenario.role) {
                 ForEach(DemoScenario.roles, id: \.self) { Text($0) }
             }
+            .pickerStyle(.segmented)
             Toggle("Principal owns the resource", isOn: $scenario.ownsResource)
 
             Button {
                 Task { await runCheck() }
             } label: {
                 HStack {
-                    Text("Check access to \(DemoScenario.resourceKind) #1")
+                    Label("Check access to \(DemoScenario.resourceKind) #1", systemImage: "checkmark.shield")
                     if isChecking {
                         Spacer()
                         ProgressView()
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.glassProminent)
             .disabled(pdp?.isReady != true || isChecking)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
 
             if let checkError {
                 Label(checkError, systemImage: "exclamationmark.triangle.fill")
@@ -143,12 +157,16 @@ struct ContentView: View {
 
             if let lastResult {
                 ForEach(DemoScenario.actions, id: \.self) { action in
-                    EffectRow(action: action, effect: lastResult.actions[action], matchedPolicy: lastResult.metadata?.actions[action]?.matchedPolicy)
+                    EffectRow(
+                        action: action, effect: lastResult.actions[action],
+                        matchedPolicy: lastResult.metadata?.actions[action]?.matchedPolicy)
                 }
                 if let lastDuration {
-                    Text("Evaluated locally in \(lastDuration.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 1))))")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        "Evaluated locally in \(lastDuration.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 1))))"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
         } header: {
@@ -213,28 +231,119 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Hub settings
+
+private struct HubSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var ruleId: String
+    @Binding var hubBaseURL: String
+    @Binding var clientId: String
+    @Binding var clientSecret: String
+    let onApply: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Rule ID", text: $ruleId)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                    TextField("Hub URL (default https://api.cerbos.cloud)", text: $hubBaseURL)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Embedded PDP rule")
+                } footer: {
+                    Text("Copy the rule ID from the deployment's Embedded PDP rules tab in Cerbos Hub.")
+                }
+                Section {
+                    TextField("Client ID", text: $clientId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("Client secret", text: $clientSecret)
+                } header: {
+                    Text("Client credentials (optional)")
+                } footer: {
+                    Text("Only needed for rules with client-credential authentication. The secret is stored in the Keychain.")
+                }
+            }
+            .navigationTitle("Cerbos Hub")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", role: .cancel) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply", role: .confirm) {
+                        dismiss()
+                        onApply()
+                    }
+                    .disabled(ruleId.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Rows
 
-private struct StatusRow: View {
+private struct StatusBanner: View {
     let status: CerbosEmbeddedPDP.Status
 
     var body: some View {
-        LabeledContent("Status") {
-            switch status {
-            case .idle:
-                Text("Idle").foregroundStyle(.secondary)
-            case .loading:
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Loading…")
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                if let detail {
+                    Text(detail).font(.footnote).foregroundStyle(.secondary)
                 }
-            case .ready:
-                Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-            case .failed(let error):
-                Label(error.localizedDescription, systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .font(.footnote)
             }
+            Spacer()
+            if case .loading = status {
+                ProgressView()
+            }
+        }
+        .padding()
+        .glassEffect(.regular.tint(tint.opacity(0.15)), in: .rect(cornerRadius: 16))
+    }
+
+    private var symbol: String {
+        switch status {
+        case .idle: "pause.circle"
+        case .loading: "arrow.triangle.2.circlepath.circle"
+        case .ready: "checkmark.shield.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch status {
+        case .idle: .secondary
+        case .loading: .blue
+        case .ready: .green
+        case .failed: .red
+        }
+    }
+
+    private var title: String {
+        switch status {
+        case .idle: "Idle"
+        case .loading: "Loading policies…"
+        case .ready: "Ready"
+        case .failed: "Failed"
+        }
+    }
+
+    private var detail: String? {
+        switch status {
+        case .idle: nil
+        case .loading: "Starting the engine and downloading the policy bundle"
+        case .ready: "Decisions are evaluated on this device"
+        case .failed(let error): error.localizedDescription
         }
     }
 }
@@ -255,14 +364,44 @@ private struct EffectRow: View {
                 }
             }
             Spacer()
-            switch effect {
-            case .allow:
-                Label("Allow", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-            case .deny:
-                Label("Deny", systemImage: "xmark.circle.fill").foregroundStyle(.red)
-            case nil:
-                Text("—").foregroundStyle(.secondary)
-            }
+            EffectBadge(effect: effect)
+        }
+    }
+}
+
+private struct EffectBadge: View {
+    let effect: Effect?
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .glassEffect(.regular.tint(tint.opacity(0.2)))
+    }
+
+    private var title: String {
+        switch effect {
+        case .allow: "Allow"
+        case .deny: "Deny"
+        case nil: "No result"
+        }
+    }
+
+    private var symbol: String {
+        switch effect {
+        case .allow: "checkmark"
+        case .deny: "xmark"
+        case nil: "minus"
+        }
+    }
+
+    private var tint: Color {
+        switch effect {
+        case .allow: .green
+        case .deny: .red
+        case nil: .secondary
         }
     }
 }

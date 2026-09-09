@@ -1,5 +1,7 @@
 # Cerbos embedded PDP on iOS
 
+[![CI](https://github.com/cerbos-gtm/cerbos-epdp-ios/actions/workflows/ci.yml/badge.svg)](https://github.com/cerbos-gtm/cerbos-epdp-ios/actions/workflows/ci.yml)
+
 A SwiftUI demo that runs a [Cerbos](https://www.cerbos.dev) embedded policy decision point
 (ePDP) on the device: policies are downloaded from Cerbos Hub, evaluated locally by the Cerbos
 WebAssembly engine, kept up to date in the background, and cached for offline starts.
@@ -111,6 +113,10 @@ Xcode project builds without Node.
 - `cd CerbosBridge && npm test` — end-to-end bridge smoke test: online init, checks, plan, JWT
   callback, structured errors, offline start from the cached bundle.
 - The Xcode test target covers the demo's request builder.
+- CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request: the bridge
+  on Node 22 (and checks the committed assets match the build), the package on Linux and macOS,
+  and the app on the iOS simulator with Xcode 26. Dependabot keeps the npm packages and workflow
+  actions current. Formatting is enforced with `swift format` (`.swift-format`).
 
 ## Security notes
 
