@@ -9,8 +9,10 @@ import { GetBundleResponseSchema } from "@cerbos/api/cerbos/cloud/epdp/v2/epdp_p
  * Hub `BundleService/GetBundle` responses made by the client's `PolicyLoader`:
  *
  * - every successful response containing a bundle is handed to the native host for persistence;
- * - if the *initial* load fails (offline, DNS, Hub outage), the most recently persisted response
- *   for the same rule is replayed once, so the app starts with the last known policies.
+ * - if the *initial* load fails for a reason that is not the client's fault (offline, DNS, a
+ *   stalled connection, a Hub 5xx, a captive portal answering with HTML), the most recently
+ *   persisted response for the same rule is replayed once, so the app starts with the last known
+ *   policies. HTTP 4xx (disabled rule, bad or revoked credentials) is never masked by the cache.
  *
  * Subsequent update checks still go to Hub as usual; a failed update never replays the cache,
  * because the loader already holds an active bundle in that case.
@@ -36,6 +38,7 @@ export class HubBundleCache {
   private cached: Uint8Array | undefined;
   private cachedContentType = "application/proto";
   private loadedOnce = false;
+  private initialLoadTimeoutMs = 20_000;
   private _current: BundleInfo | undefined;
 
   public onBundle?: (info: BundleInfo) => void;
@@ -47,8 +50,9 @@ export class HubBundleCache {
   }
 
   /** Prepares the cache for a (re)initialised client. */
-  public configure(key: string, cachedBody: string | undefined): void {
+  public configure(key: string, cachedBody: string | undefined, initialLoadTimeoutMs = 20_000): void {
     this.key = key;
+    this.initialLoadTimeoutMs = initialLoadTimeoutMs;
     this.loadedOnce = false;
     this._current = undefined;
     this.cached = cachedBody ? decodeBase64(cachedBody) : undefined;
@@ -68,10 +72,12 @@ export class HubBundleCache {
         return originalFetch(input, init);
       }
 
+      const initialLoad = !this.loadedOnce;
       let response: Response;
       try {
-        response = await originalFetch(input, init);
+        response = await originalFetch(input, initialLoad ? this.withInitialLoadTimeout(init) : init);
       } catch (error) {
+        // Offline, DNS failure, connection refused, or the initial-load timeout.
         const fallback = this.fallback(`network error: ${String(error)}`);
         if (fallback) {
           return fallback;
@@ -80,17 +86,43 @@ export class HubBundleCache {
       }
 
       if (!response.ok) {
-        const fallback = this.fallback(`HTTP ${response.status}`);
-        if (fallback) {
-          void response.body?.cancel().catch(() => undefined);
-          return fallback;
+        // Server-side trouble is a reason to keep going with the last known policies. A client
+        // error (disabled rule, bad or revoked credentials, unknown rule) must surface instead:
+        // replaying the cache would let a revoked bundle keep working on every cold start.
+        if (this.isRetryableStatus(response.status)) {
+          const fallback = this.fallback(`HTTP ${response.status}`);
+          if (fallback) {
+            void response.body?.cancel().catch(() => undefined);
+            return fallback;
+          }
         }
         return response;
       }
 
-      await this.observe(response);
+      const validated = await this.observe(response);
+      if (validated === "invalid") {
+        // A 200 that is not a bundle (captive portal, proxy error page, HTML login page).
+        const fallback = this.fallback("response is not a policy bundle");
+        if (fallback) {
+          return fallback;
+        }
+      }
       return response;
     };
+  }
+
+  /** Bounds the very first bundle download so a stalled connection cannot block start-up forever. */
+  private withInitialLoadTimeout(init: RequestInit | undefined): RequestInit | undefined {
+    if (this.initialLoadTimeoutMs <= 0 || typeof AbortSignal.timeout !== "function") {
+      return init;
+    }
+    const timeout = AbortSignal.timeout(this.initialLoadTimeoutMs);
+    const signal = init?.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([init.signal, timeout]) : timeout;
+    return { ...init, signal };
+  }
+
+  private isRetryableStatus(status: number): boolean {
+    return status >= 500 || status === 408 || status === 429;
   }
 
   private isGetBundle(input: RequestInfo | URL): boolean {
@@ -98,32 +130,43 @@ export class HubBundleCache {
     return url.includes(getBundlePath);
   }
 
-  private async observe(response: Response): Promise<void> {
+  private async observe(response: Response): Promise<"bundle" | "notModified" | "invalid"> {
+    let bytes: Uint8Array;
     try {
-      const bytes = new Uint8Array(await response.clone().arrayBuffer());
-      const message = fromBinary(GetBundleResponseSchema, bytes, { readUnknownFields: false });
-
-      switch (message.result.case) {
-        case "bundle": {
-          const metadata = message.result.value.metadata;
-          const bundleId = metadata?.bundleId ?? "";
-          const ruleRevision = metadata?.ruleRevision.toString() ?? "";
-          this.cached = bytes;
-          this.cachedContentType = response.headers.get("content-type") ?? this.cachedContentType;
-          this.loadedOnce = true;
-          this.setCurrent({ bundleId, ruleRevision, source: "network", receivedAt: new Date().toISOString() });
-          this.host.persist({ key: this.key, body: encodeBase64(bytes), bundleId, ruleRevision });
-          break;
-        }
-        case "notModified":
-          this.loadedOnce = true;
-          break;
-        default:
-          break;
-      }
+      bytes = new Uint8Array(await response.clone().arrayBuffer());
     } catch (error) {
-      // Not a binary bundle response (for example an error payload); nothing to cache.
-      this.host.log("debug", `Ignoring GetBundle response: ${String(error)}`);
+      this.host.log("warn", `Could not read GetBundle response: ${String(error)}`);
+      return "invalid";
+    }
+
+    let message;
+    try {
+      message = fromBinary(GetBundleResponseSchema, bytes, { readUnknownFields: false });
+    } catch (error) {
+      this.host.log("warn", `GetBundle response is not a bundle: ${String(error)}`);
+      return "invalid";
+    }
+
+    switch (message.result.case) {
+      case "bundle": {
+        const metadata = message.result.value.metadata;
+        const bundleId = metadata?.bundleId ?? "";
+        const ruleRevision = metadata?.ruleRevision.toString() ?? "";
+        if (!bundleId) {
+          return "invalid";
+        }
+        this.cached = bytes;
+        this.cachedContentType = response.headers.get("content-type") ?? this.cachedContentType;
+        this.loadedOnce = true;
+        this.setCurrent({ bundleId, ruleRevision, source: "network", receivedAt: new Date().toISOString() });
+        this.host.persist({ key: this.key, body: encodeBase64(bytes), bundleId, ruleRevision });
+        return "bundle";
+      }
+      case "notModified":
+        this.loadedOnce = true;
+        return "notModified";
+      default:
+        return "invalid";
     }
   }
 

@@ -99,6 +99,18 @@ struct ResponseDecodingTests {
         #expect(second.outputs.isEmpty)
     }
 
+    @Test("unknown effects decode as deny without failing the response")
+    func unknownEffect() throws {
+        let response = try BridgeJSON.unwrap(
+            CheckResourcesResponse.self,
+            envelopeJSON: #"{"ok":true,"result":{"requestId":"r","results":[{"resource":{"kind":"k","id":"1"},"actions":{"read":"EFFECT_ALLOW","edit":"EFFECT_SOMETHING_NEW"}}]}}"#,
+            failure: { .request($0) }
+        )
+        #expect(response.isAllowed(kind: "k", id: "1", action: "read"))
+        #expect(!response.isAllowed(kind: "k", id: "1", action: "edit"))
+        #expect(response.results[0].actions["edit"] == .deny)
+    }
+
     @Test("failed envelope maps to CerbosError with gRPC code")
     func failedEnvelope() throws {
         let json =
@@ -153,21 +165,23 @@ struct BridgeEventTests {
             Issue.record("status")
         }
 
-        if case .bundle(let info) = try decode(
-            #"{"type":"bundle","bundle":{"bundleId":"B","ruleRevision":"2","source":"cache","receivedAt":"2026-09-09T11:20:53Z"}}"#)
-        {
-            #expect(info.bundleId == "B")
-            #expect(info.source == .cache)
+        if case .bundles(let active, let pending) = try decode(
+            #"{"type":"bundles","active":{"bundleId":"B","ruleRevision":"2","source":"cache","receivedAt":"2026-09-09T11:20:53Z"},"pending":{"bundleId":"C","ruleRevision":"3","source":"network","receivedAt":"2026-09-09T11:21:53Z"}}"#
+        ) {
+            #expect(active?.bundleId == "B")
+            #expect(active?.source == .cache)
+            #expect(pending?.bundleId == "C")
         } else {
-            Issue.record("bundle")
+            Issue.record("bundles")
         }
 
-        if case .policyUpdate(let ok, let error, let bundle) = try decode(
-            #"{"type":"policyUpdate","ok":false,"error":{"name":"NotOK","message":"unavailable","code":14}}"#)
-        {
+        if case .policyUpdate(let ok, let error, let bundle, let pending) = try decode(
+            #"{"type":"policyUpdate","ok":false,"error":{"name":"NotOK","message":"unavailable","code":14}}"#
+        ) {
             #expect(!ok)
             #expect(error?.code == 14)
             #expect(bundle == nil)
+            #expect(pending == nil)
         } else {
             Issue.record("policyUpdate")
         }

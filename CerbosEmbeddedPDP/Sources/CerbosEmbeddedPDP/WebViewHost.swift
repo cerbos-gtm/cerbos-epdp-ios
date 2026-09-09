@@ -109,41 +109,70 @@ final class CerbosWebViewHost: NSObject {
     // MARK: Calls into the bridge
 
     /// Invokes a bridge method and decodes its result. Bridge-side failures are mapped with `failure`.
+    /// A `timeout` turns a call that never resolves in the page into ``CerbosError/timeout(operation:)``.
     func invoke<Result: Decodable>(
         _ method: String,
         params: (any Encodable)? = nil,
+        timeout: Duration? = nil,
         failure: (BridgeError) -> CerbosError
     ) async throws(CerbosError) -> Result {
-        guard let webView, isBridgeReady else {
+        guard webView != nil, isBridgeReady else {
             throw CerbosError.notReady
         }
-
-        var arguments: [String: Any] = ["method": method]
+        var paramsJSON: String?
         if let params {
-            arguments["params"] = try BridgeJSON.encode(params)
-        } else {
-            arguments["params"] = NSNull()
+            paramsJSON = try BridgeJSON.encode(params)
         }
+        let envelopeJSON = try await callBridge(method: method, paramsJSON: paramsJSON, timeout: timeout)
+        return try BridgeJSON.unwrap(Result.self, envelopeJSON: envelopeJSON, failure: failure)
+    }
 
-        let value: Any?
+    private func callBridge(method: String, paramsJSON: String?, timeout: Duration?) async throws(CerbosError) -> String {
         do {
-            // The async overlay uses the `contentWorld:` label; `in:in:` would silently pick the
-            // completion-handler overload and return immediately.
-            value = try await webView.callAsyncJavaScript(
-                "return await window.CerbosBridge.invoke(method, params);",
-                arguments: arguments,
-                in: nil,
-                contentWorld: .page
-            )
+            guard let timeout else {
+                return try await evaluateBridgeCall(method: method, paramsJSON: paramsJSON)
+            }
+            // WebKit cannot cancel a running call, so race it against a timer instead of a task group
+            // (which would wait for the JavaScript call to finish before returning).
+            let race = BridgeCallRace()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
+                race.continuation = continuation
+                race.timer = Task { @MainActor in
+                    try? await Task.sleep(for: timeout)
+                    race.resume(.failure(CerbosError.timeout(operation: method)))
+                }
+                Task { @MainActor in
+                    do {
+                        race.resume(.success(try await self.evaluateBridgeCall(method: method, paramsJSON: paramsJSON)))
+                    } catch {
+                        race.resume(.failure(error))
+                    }
+                }
+            }
+        } catch let error as CerbosError {
+            throw error
         } catch {
             throw CerbosError.webView(reason: Self.describe(error))
         }
+    }
 
+    private func evaluateBridgeCall(method: String, paramsJSON: String?) async throws -> String {
+        guard let webView else {
+            throw CerbosError.notReady
+        }
+        // The async overlay uses the `contentWorld:` label; `in:in:` would silently pick the
+        // completion-handler overload and return immediately.
+        let value = try await webView.callAsyncJavaScript(
+            "return await window.CerbosBridge.invoke(method, params);",
+            arguments: ["method": method, "params": paramsJSON ?? NSNull()],
+            in: nil,
+            contentWorld: .page
+        )
         guard let envelopeJSON = value as? String else {
             throw CerbosError.invalidResponse(
                 reason: "bridge returned \(value.map { String(describing: type(of: $0)) } ?? "nil") instead of a JSON string")
         }
-        return try BridgeJSON.unwrap(Result.self, envelopeJSON: envelopeJSON, failure: failure)
+        return envelopeJSON
     }
 
     /// Answers a `jwtDecode` request from the bridge.
@@ -188,6 +217,20 @@ final class CerbosWebViewHost: NSObject {
             return message
         }
         return nsError.localizedDescription
+    }
+}
+
+/// Resumes a bridge call's continuation exactly once, from whichever finishes first: the call or its timer.
+@MainActor
+private final class BridgeCallRace {
+    var continuation: CheckedContinuation<String, any Error>?
+    var timer: Task<Void, Never>?
+
+    func resume(_ result: Result<String, any Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timer?.cancel()
+        continuation.resume(with: result)
     }
 }
 

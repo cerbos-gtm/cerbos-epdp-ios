@@ -14,15 +14,32 @@ const ruleId = process.env.RULE_ID ?? "AVGB9RP6HFBL";
 const events = [];
 const wasmBytes = await readFile(path.join(webDir, "server.wasm"));
 const realFetch = globalThis.fetch.bind(globalThis);
-let failGetBundle = false;
+// How the fake network answers GetBundle: "online" | "offline" | "hang" | "forbidden" | "portal" | "outage"
+let hubMode = "online";
 
 globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   if (url === "server.wasm" || url.endsWith("/server.wasm")) {
     return new Response(wasmBytes, { status: 200, headers: { "content-type": "application/wasm" } });
   }
-  if (failGetBundle && url.includes("/GetBundle")) {
-    throw new TypeError("Simulated offline: Load failed");
+  if (url.includes("/GetBundle")) {
+    switch (hubMode) {
+      case "offline":
+        throw new TypeError("Simulated offline: Load failed");
+      case "hang":
+        // Stalled connection: only the caller's abort signal can end this.
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal.reason ?? new Error("aborted")));
+        });
+      case "forbidden":
+        return new Response(JSON.stringify({ code: "permission_denied", message: "rule disabled" }), { status: 403, headers: { "content-type": "application/json" } });
+      case "outage":
+        return new Response("bad gateway", { status: 502, headers: { "content-type": "text/plain" } });
+      case "portal":
+        return new Response("<html><body>Please log in to the Wi-Fi</body></html>", { status: 200, headers: { "content-type": "text/html" } });
+      default:
+        break;
+    }
   }
   return realFetch(input, init);
 };
@@ -110,13 +127,10 @@ await assert.rejects(invoke("checkResources", { principal: { id: "" }, resources
 });
 
 // --- 2. Offline cold start using the cached bundle --------------------------------------------
-failGetBundle = true;
+hubMode = "offline";
+const cachedBundle = { key: cacheEvent.key, body: cacheEvent.body };
 started = performance.now();
-const offline = await invoke("init", {
-  ruleId,
-  updateIntervalSeconds: 0,
-  cachedBundle: { key: cacheEvent.key, body: cacheEvent.body },
-});
+const offline = await invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle });
 console.log(`init (offline, cached bundle): ${Math.round(performance.now() - started)} ms`, JSON.stringify(offline.bundle));
 assert.equal(offline.status, "ready");
 assert.equal(offline.bundle.source, "cache");
@@ -129,6 +143,45 @@ await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0 }));
 const status = await invoke("status");
 assert.equal(status.status, "failed");
 assert.ok(status.error?.message);
+
+// --- 4. A stalled connection is aborted and the cache is replayed -------------------------------
+hubMode = "hang";
+started = performance.now();
+const stalled = await invoke("init", { ruleId, updateIntervalSeconds: 0, initialLoadTimeoutSeconds: 1, cachedBundle });
+const stalledMs = performance.now() - started;
+console.log(`init (stalled connection, cached bundle): ${Math.round(stalledMs)} ms`);
+assert.equal(stalled.bundle.source, "cache");
+assert.ok(stalledMs < 15_000, "initial-load timeout did not fire");
+
+// --- 5. A captive portal (HTTP 200 with HTML) is not mistaken for a bundle ---------------------
+hubMode = "portal";
+const portal = await invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle });
+assert.equal(portal.bundle.source, "cache");
+
+// --- 6. A Hub outage (5xx) replays the cache ---------------------------------------------------
+hubMode = "outage";
+const outage = await invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle });
+assert.equal(outage.bundle.source, "cache");
+
+// --- 7. A client error (disabled rule, revoked credentials) is never masked by the cache -------
+hubMode = "forbidden";
+await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle }), (error) => {
+  assert.equal(error.serialized.code, 7, "expected gRPC PERMISSION_DENIED");
+  return true;
+});
+assert.equal((await invoke("status")).status, "failed");
+
+// --- 8. A superseded init must not tear down its successor -------------------------------------
+hubMode = "online";
+const [superseded, winner] = await Promise.allSettled([
+  invoke("init", { ruleId, updateIntervalSeconds: 0 }),
+  invoke("init", { ruleId, updateIntervalSeconds: 0 }),
+]);
+assert.equal(superseded.status, "rejected");
+assert.equal(winner.status, "fulfilled");
+assert.equal(winner.value.status, "ready");
+assert.equal((await invoke("status")).status, "ready");
+assert.equal((await invoke("checkResources", request)).results.length, 2);
 
 await invoke("stop");
 console.log("smoke test passed");

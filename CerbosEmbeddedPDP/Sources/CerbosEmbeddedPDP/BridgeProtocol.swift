@@ -46,6 +46,7 @@ struct BridgeInitParams: Encodable {
     var hub: Hub
     var updateIntervalSeconds: Double
     var activateOnLoad: Bool
+    var initialLoadTimeoutSeconds: Double
     var options: Options
     var emitDecisions: Bool
     var jwtDecoding: Bool
@@ -55,12 +56,14 @@ struct BridgeInitParams: Encodable {
 struct BridgeInitResult: Decodable {
     var status: BridgeStatus
     var bundle: BundleInfo?
+    var pending: BundleInfo?
     var server: ServerInfo
 }
 
 struct BridgeStatusResult: Decodable {
     var status: BridgeStatus
     var bundle: BundleInfo?
+    var pending: BundleInfo?
     var error: BridgeError?
 }
 
@@ -68,8 +71,8 @@ struct BridgeStatusResult: Decodable {
 enum BridgeEvent: Decodable, Sendable {
     case bridgeReady
     case status(BridgeStatus, error: BridgeError?)
-    case bundle(BundleInfo)
-    case policyUpdate(ok: Bool, error: BridgeError?, bundle: BundleInfo?)
+    case bundles(active: BundleInfo?, pending: BundleInfo?)
+    case policyUpdate(ok: Bool, error: BridgeError?, bundle: BundleInfo?, pending: BundleInfo?)
     case decision(JSONValue)
     case validationErrors([ValidationError])
     case bundleCache(key: String, body: String, bundleId: String, ruleRevision: String)
@@ -78,7 +81,8 @@ enum BridgeEvent: Decodable, Sendable {
     case unknown(type: String)
 
     private enum CodingKeys: String, CodingKey {
-        case type, status, error, bundle, ok, entry, errors, key, body, bundleId, ruleRevision, level, message, id, token, keySetId
+        case type, status, error, bundle, active, pending, ok, entry, errors, key, body, bundleId, ruleRevision, level, message, id, token,
+            keySetId
     }
 
     init(from decoder: any Decoder) throws {
@@ -92,13 +96,17 @@ enum BridgeEvent: Decodable, Sendable {
                 try container.decode(BridgeStatus.self, forKey: .status),
                 error: try container.decodeIfPresent(BridgeError.self, forKey: .error)
             )
-        case "bundle":
-            self = .bundle(try container.decode(BundleInfo.self, forKey: .bundle))
+        case "bundles":
+            self = .bundles(
+                active: try container.decodeIfPresent(BundleInfo.self, forKey: .active),
+                pending: try container.decodeIfPresent(BundleInfo.self, forKey: .pending)
+            )
         case "policyUpdate":
             self = .policyUpdate(
                 ok: try container.decode(Bool.self, forKey: .ok),
                 error: try container.decodeIfPresent(BridgeError.self, forKey: .error),
-                bundle: try container.decodeIfPresent(BundleInfo.self, forKey: .bundle)
+                bundle: try container.decodeIfPresent(BundleInfo.self, forKey: .bundle),
+                pending: try container.decodeIfPresent(BundleInfo.self, forKey: .pending)
             )
         case "decision":
             self = .decision(try container.decodeIfPresent(JSONValue.self, forKey: .entry) ?? .null)

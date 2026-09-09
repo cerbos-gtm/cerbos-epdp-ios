@@ -123,6 +123,29 @@ Xcode project builds without Node.
   and the app on the iOS simulator with Xcode 26. Dependabot keeps the npm packages and workflow
   actions current. Formatting is enforced with `swift format` (`.swift-format`).
 
+## Behaviour worth knowing
+
+- **Offline cache policy.** The last bundle is replayed only when the first download fails for a
+  reason that is not the client's fault: no network, DNS failure, a stalled connection (aborted
+  after `initialLoadTimeout`, 20 s by default), a Hub 5xx/429, or a captive portal answering with
+  HTML. A 4xx (disabled rule, unknown rule, bad or revoked credentials) fails `start()` instead, so
+  revoking access takes effect on the next cold start.
+- **Timeouts.** `start()` fails with `CerbosError.timeout` after `startTimeout` (120 s), and each
+  check after `requestTimeout` (30 s). Evaluation takes milliseconds; these only fire on a stuck
+  engine or a hung network.
+- **Deferred activation.** With `activateOnLoad = false`, `bundle` stays on the active bundle and a
+  downloaded update appears in `pendingBundle` until `activatePendingBundle()`.
+- **Update cadence.** The SDK's loader polls on its interval and has no "check now"; after a long
+  time in the background the next check happens within one interval. `restart()` forces a fresh
+  download at the cost of recompiling the WebAssembly module.
+- **One instance per rule.** Each `CerbosEmbeddedPDP` owns a web view and compiles the 20 MB engine.
+  Share one instance (for example from your app model) rather than creating one per screen.
+- **Cache keys.** The offline cache is keyed by Hub URL (trailing slashes ignored), rule ID and
+  scopes; changing any of them starts from an empty cache.
+- **Plain-HTTP Hub URLs** (self-hosted, non-TLS) are blocked by App Transport Security unless the
+  app adds an exception.
+- **CI depends on the public demo rule** and on Hub being reachable from the runners.
+
 ## Security notes
 
 - Client credentials in a shipped app can be extracted; prefer public rules with policy filtering

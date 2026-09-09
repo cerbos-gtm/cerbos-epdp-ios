@@ -189,6 +189,18 @@ public struct PlanResourcesRequest: Sendable, Hashable, Codable {
 public enum Effect: String, Sendable, Codable {
     case allow = "EFFECT_ALLOW"
     case deny = "EFFECT_DENY"
+
+    /// Any effect this version does not know is treated as a denial (fail closed) rather than
+    /// failing the whole response, so the other resources in a batch keep their decisions.
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if let known = Effect(rawValue: raw) {
+            self = known
+        } else {
+            CerbosLog.error("Unknown effect \(raw) in a check result; treating it as a denial")
+            self = .deny
+        }
+    }
 }
 
 public struct ResourceIdentifier: Sendable, Hashable, Codable {

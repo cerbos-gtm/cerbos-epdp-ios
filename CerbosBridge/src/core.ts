@@ -36,8 +36,8 @@ export interface SerializedError {
 export type BridgeEvent =
   | { type: "bridgeReady" }
   | { type: "status"; status: BridgeStatus; error?: SerializedError }
-  | { type: "bundle"; bundle: BundleInfo }
-  | { type: "policyUpdate"; ok: boolean; error?: SerializedError; bundle?: BundleInfo }
+  | { type: "bundles"; active?: BundleInfo; pending?: BundleInfo }
+  | { type: "policyUpdate"; ok: boolean; error?: SerializedError; bundle?: BundleInfo; pending?: BundleInfo }
   | { type: "decision"; entry: unknown }
   | { type: "validationErrors"; errors: ValidationError[] }
   | { type: "bundleCache"; key: string; body: string; bundleId: string; ruleRevision: string }
@@ -63,6 +63,8 @@ export interface InitParams {
   /** Seconds between update checks. `0` disables polling. Minimum 10. Default 60. */
   updateIntervalSeconds?: number;
   activateOnLoad?: boolean;
+  /** Abort the very first bundle download after this many seconds so a stalled connection falls back to the cache. Default 20. */
+  initialLoadTimeoutSeconds?: number;
   options?: {
     defaultPolicyVersion?: string;
     defaultScope?: string;
@@ -83,13 +85,17 @@ export interface InitParams {
 
 export interface InitResult {
   status: BridgeStatus;
+  /** The bundle decisions are evaluated against. */
   bundle: BundleInfo | undefined;
+  /** A downloaded bundle waiting for `activate` (only when `activateOnLoad` is false). */
+  pending: BundleInfo | undefined;
   server: { version: string; commit: string; builtAt: string };
 }
 
 export interface StatusResult {
   status: BridgeStatus;
   bundle: BundleInfo | undefined;
+  pending: BundleInfo | undefined;
   error: SerializedError | undefined;
 }
 
@@ -101,13 +107,39 @@ export class CerbosBridgeCore {
   private status: BridgeStatus = "idle";
   private lastError: SerializedError | undefined;
   private readonly bundleCache: HubBundleCache;
+  /** Incremented per `init`; lets a superseded initialisation notice it must not touch the newer client. */
+  private generation = 0;
+  private initialised = false;
+  private activateOnLoad = true;
+  private activeBundle: BundleInfo | undefined;
+  private pendingBundle: BundleInfo | undefined;
 
   public constructor(private readonly host: BridgeHost) {
     this.bundleCache = new HubBundleCache({
       persist: (entry) => host.emit({ type: "bundleCache", ...entry }),
       log: (level, message) => host.emit({ type: "log", level, message }),
     });
-    this.bundleCache.onBundle = (bundle) => host.emit({ type: "bundle", bundle });
+    this.bundleCache.onBundle = (bundle) => this.handleDownloadedBundle(bundle);
+  }
+
+  /** Called whenever the loader receives a bundle from Hub (or the cache replays one). */
+  private handleDownloadedBundle(bundle: BundleInfo): void {
+    if (!this.initialised || this.activateOnLoad) {
+      // The initial bundle is always activated by the loader; later ones are when activateOnLoad is set.
+      this.activeBundle = bundle;
+      this.pendingBundle = undefined;
+    } else {
+      this.pendingBundle = bundle;
+    }
+    this.emitBundles();
+  }
+
+  private emitBundles(): void {
+    this.host.emit({
+      type: "bundles",
+      ...(this.activeBundle ? { active: this.activeBundle } : {}),
+      ...(this.pendingBundle ? { pending: this.pendingBundle } : {}),
+    });
   }
 
   /** Entry point used by the native host: JSON in, JSON envelope out. */
@@ -140,6 +172,11 @@ export class CerbosBridgeCore {
         return await this.requireClient().serverInfo();
       case "activate":
         this.loader?.activate();
+        if (this.pendingBundle) {
+          this.activeBundle = this.pendingBundle;
+          this.pendingBundle = undefined;
+          this.emitBundles();
+        }
         return true;
       case "stop":
         this.stop();
@@ -154,12 +191,14 @@ export class CerbosBridgeCore {
       throw new Error("init requires a ruleId");
     }
 
+    const generation = ++this.generation;
     this.stop();
     this.setStatus("loading");
+    this.activateOnLoad = params.activateOnLoad ?? true;
 
     const { ruleId, scopes = [], hub = {}, options = {} } = params;
     const cacheKey = params.cachedBundle?.key ?? bundleCacheKey(hub.baseUrl, ruleId, scopes);
-    this.bundleCache.configure(cacheKey, params.cachedBundle?.body);
+    this.bundleCache.configure(cacheKey, params.cachedBundle?.body, (params.initialLoadTimeoutSeconds ?? 20) * 1000);
 
     const loaderOptions: PolicyLoaderOptions = {
       ruleId: ruleId.trim(),
@@ -169,7 +208,8 @@ export class CerbosBridgeCore {
           type: "policyUpdate",
           ok: error === undefined,
           ...(error ? { error: serializeError(error) } : {}),
-          ...(this.bundleCache.current ? { bundle: this.bundleCache.current } : {}),
+          ...(this.activeBundle ? { bundle: this.activeBundle } : {}),
+          ...(this.pendingBundle ? { pending: this.pendingBundle } : {}),
         });
       },
     };
@@ -227,18 +267,30 @@ export class CerbosBridgeCore {
       // Waits for the WebAssembly module to be instantiated and the initial policy bundle to load.
       await client.serverInfo();
     } catch (error) {
+      if (generation !== this.generation) {
+        // A newer init took over while this one was loading; leave its client alone.
+        loader.stop();
+        throw error;
+      }
       this.lastError = serializeError(error);
       this.setStatus("failed", this.lastError);
       this.stop();
       throw error;
     }
 
+    if (generation !== this.generation) {
+      loader.stop();
+      throw new Error("Initialisation was superseded by a newer init call");
+    }
+
+    this.initialised = true;
     this.lastError = undefined;
     this.setStatus("ready");
 
     return {
       status: this.status,
-      bundle: this.bundleCache.current,
+      bundle: this.activeBundle,
+      pending: this.pendingBundle,
       server: {
         version: serverMetadata.cerbosVersion,
         commit: serverMetadata.cerbosCommitHash,
@@ -279,6 +331,9 @@ export class CerbosBridgeCore {
     this.loader?.stop();
     this.loader = undefined;
     this.client = undefined;
+    this.initialised = false;
+    this.activeBundle = undefined;
+    this.pendingBundle = undefined;
   }
 
   private requireClient(): Embedded {
@@ -289,7 +344,7 @@ export class CerbosBridgeCore {
   }
 
   private statusResult(): StatusResult {
-    return { status: this.status, bundle: this.bundleCache.current, error: this.lastError };
+    return { status: this.status, bundle: this.activeBundle, pending: this.pendingBundle, error: this.lastError };
   }
 
   private setStatus(status: BridgeStatus, error?: SerializedError): void {
@@ -299,7 +354,9 @@ export class CerbosBridgeCore {
 }
 
 export function bundleCacheKey(baseUrl: string | undefined, ruleId: string, scopes: string[]): string {
-  return [baseUrl ?? "https://api.cerbos.cloud", ruleId.trim(), [...scopes].sort().join(",")].join("|");
+  // Keep in sync with `CerbosEmbeddedPDP.offlineCacheKey` on the Swift side.
+  const normalisedBaseUrl = (baseUrl ?? "https://api.cerbos.cloud").replace(/\/+$/, "");
+  return [normalisedBaseUrl, ruleId.trim(), [...scopes].sort().join(",")].join("|");
 }
 
 function schemaEnforcement(value: "none" | "warn" | "reject"): SchemaEnforcement {

@@ -56,6 +56,12 @@ public final class CerbosEmbeddedPDP {
         public var updateInterval: Duration? = .seconds(60)
         /// Whether downloaded updates replace the active bundle immediately (otherwise call ``activatePendingBundle()``).
         public var activateOnLoad = true
+        /// Upper bound for `start()`: WebAssembly compilation plus the first bundle download.
+        public var startTimeout: Duration = .seconds(120)
+        /// Upper bound for a single check or plan. Evaluation takes milliseconds; this only fires on a stuck engine.
+        public var requestTimeout: Duration = .seconds(30)
+        /// The first bundle download is aborted after this long so a stalled connection falls back to the offline cache.
+        public var initialLoadTimeout: Duration = .seconds(20)
 
         public var defaultPolicyVersion: String? = nil
         public var defaultScope: String? = nil
@@ -110,8 +116,10 @@ public final class CerbosEmbeddedPDP {
 
     public let configuration: Configuration
     public private(set) var status: Status = .idle
-    /// The policy bundle currently loaded by the embedded PDP.
+    /// The policy bundle decisions are currently evaluated against.
     public private(set) var bundle: BundleInfo?
+    /// A newer bundle that has been downloaded but not activated (only when `Configuration.activateOnLoad` is `false`).
+    public private(set) var pendingBundle: BundleInfo?
     /// Build information of the bundled WebAssembly server.
     public private(set) var server: ServerInfo?
     /// Outcome of the most recent background update check.
@@ -123,8 +131,13 @@ public final class CerbosEmbeddedPDP {
 
     /// Key under which this configuration's policy bundle is cached. Matches the bridge's key.
     public var offlineCacheKey: String {
-        [
-            configuration.hubBaseURL?.absoluteString ?? "https://api.cerbos.cloud",
+        // Keep in sync with `bundleCacheKey` in CerbosBridge/src/core.ts.
+        var baseURL = configuration.hubBaseURL?.absoluteString ?? "https://api.cerbos.cloud"
+        while baseURL.hasSuffix("/") {
+            baseURL.removeLast()
+        }
+        return [
+            baseURL,
             configuration.ruleId.trimmingCharacters(in: .whitespaces),
             configuration.scopes.sorted().joined(separator: ","),
         ].joined(separator: "|")
@@ -132,6 +145,7 @@ public final class CerbosEmbeddedPDP {
 
     @ObservationIgnored private let host: CerbosWebViewHost
     @ObservationIgnored private let cache: PolicyBundleCache
+    @ObservationIgnored private let resourcesError: CerbosError?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var restartAttempts = 0
 
@@ -143,7 +157,14 @@ public final class CerbosEmbeddedPDP {
     public init(configuration: Configuration, cache: PolicyBundleCache = PolicyBundleCache()) {
         self.configuration = configuration
         self.cache = cache
-        let directory = (try? CerbosWebViewHost.bundledResourcesDirectory()) ?? URL(fileURLWithPath: "/dev/null")
+        var directory = URL(fileURLWithPath: "/dev/null")
+        var resourcesError: CerbosError?
+        do {
+            directory = try CerbosWebViewHost.bundledResourcesDirectory()
+        } catch {
+            resourcesError = error
+        }
+        self.resourcesError = resourcesError
         self.host = CerbosWebViewHost(resourcesDirectory: directory)
         host.onEvent = { [weak self] event in self?.handle(event) }
         host.onProcessTerminated = { [weak self] in self?.handleProcessTermination() }
@@ -176,11 +197,12 @@ public final class CerbosEmbeddedPDP {
         host.shutdown()
         status = .idle
         bundle = nil
+        pendingBundle = nil
     }
 
     /// Activates a downloaded-but-pending bundle when `Configuration.activateOnLoad` is `false`.
     public func activatePendingBundle() async throws(CerbosError) {
-        let _: BridgeIgnoredResult = try await host.invoke("activate", failure: { .request($0) })
+        let _: BridgeIgnoredResult = try await host.invoke("activate", timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
     /// Removes the cached policy bundle for this configuration.
@@ -192,17 +214,17 @@ public final class CerbosEmbeddedPDP {
 
     public func checkResources(_ request: CheckResourcesRequest) async throws(CerbosError) -> CheckResourcesResponse {
         try ensureReady()
-        return try await host.invoke("checkResources", params: request, failure: { .request($0) })
+        return try await host.invoke("checkResources", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
     public func checkResource(_ request: CheckResourceRequest) async throws(CerbosError) -> CheckResult {
         try ensureReady()
-        return try await host.invoke("checkResource", params: request, failure: { .request($0) })
+        return try await host.invoke("checkResource", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
     public func isAllowed(_ request: IsAllowedRequest) async throws(CerbosError) -> Bool {
         try ensureReady()
-        return try await host.invoke("isAllowed", params: request, failure: { .request($0) })
+        return try await host.invoke("isAllowed", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
     public func isAllowed(
@@ -213,7 +235,7 @@ public final class CerbosEmbeddedPDP {
 
     public func planResources(_ request: PlanResourcesRequest) async throws(CerbosError) -> PlanResourcesResponse {
         try ensureReady()
-        return try await host.invoke("planResources", params: request, failure: { .request($0) })
+        return try await host.invoke("planResources", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
     // MARK: Internals
@@ -227,6 +249,9 @@ public final class CerbosEmbeddedPDP {
     private func performStart() async {
         status = .loading
         do {
+            if let resourcesError {
+                throw resourcesError
+            }
             try await host.start()
 
             var cachedBundle: BridgeInitParams.CachedBundle?
@@ -238,15 +263,21 @@ public final class CerbosEmbeddedPDP {
             let result: BridgeInitResult = try await host.invoke(
                 "init",
                 params: initParams(cachedBundle: cachedBundle),
+                timeout: configuration.startTimeout,
                 failure: { .initialisation($0) }
             )
             bundle = result.bundle
+            pendingBundle = result.pending
             server = result.server
             restartAttempts = 0
             status = .ready
             CerbosLog.info(
                 "Cerbos embedded PDP ready (bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?"))")
         } catch {
+            guard status != .idle else {
+                // stop() was called while starting; stay idle.
+                return
+            }
             CerbosLog.error("Cerbos embedded PDP failed to start: \(error.localizedDescription)")
             status = .failed(error)
         }
@@ -270,6 +301,7 @@ public final class CerbosEmbeddedPDP {
             ),
             updateIntervalSeconds: intervalSeconds,
             activateOnLoad: configuration.activateOnLoad,
+            initialLoadTimeoutSeconds: Double(configuration.initialLoadTimeout.components.seconds),
             options: .init(
                 defaultPolicyVersion: configuration.defaultPolicyVersion,
                 defaultScope: configuration.defaultScope,
