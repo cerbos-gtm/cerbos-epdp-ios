@@ -247,11 +247,12 @@ public final class CerbosEmbeddedPDP {
     }
 
     private func performStart() async {
+        if let resourcesError {
+            status = .failed(resourcesError)
+            return
+        }
         status = .loading
         do {
-            if let resourcesError {
-                throw resourcesError
-            }
             try await host.start()
 
             var cachedBundle: BridgeInitParams.CachedBundle?
@@ -330,16 +331,24 @@ public final class CerbosEmbeddedPDP {
                 status = .failed(.initialisation(error))
             }
 
-        case .bundle(let info):
-            bundle = info
-            appendLog(
-                level: "info", "Policy bundle \(info.bundleId) (revision \(info.ruleRevision)) loaded from \(info.source.rawValue)")
-
-        case .policyUpdate(let ok, let error, let info):
-            lastPolicyUpdate = PolicyUpdate(date: Date(), error: error, bundle: info)
-            if let info {
-                bundle = info
+        case .bundles(let active, let pending):
+            if let active, active != bundle {
+                appendLog(
+                    level: "info",
+                    "Policy bundle \(active.bundleId) (revision \(active.ruleRevision)) active, loaded from \(active.source.rawValue)")
             }
+            if let pending, pending != pendingBundle {
+                appendLog(level: "info", "Policy bundle \(pending.bundleId) downloaded; call activatePendingBundle() to use it")
+            }
+            bundle = active
+            pendingBundle = pending
+
+        case .policyUpdate(let ok, let error, let active, let pending):
+            lastPolicyUpdate = PolicyUpdate(date: Date(), error: error, bundle: active)
+            if let active {
+                bundle = active
+            }
+            pendingBundle = pending
             if !ok, let error {
                 appendLog(level: "warn", "Policy update failed: \(error.message)")
             }
