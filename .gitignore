@@ -1,0 +1,16 @@
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.xcscmblueprint
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+
+# Node (CerbosBridge)
+node_modules/
+
+# macOS
+.DS_Store

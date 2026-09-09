@@ -1,0 +1,119 @@
+# Cerbos embedded PDP on iOS
+
+A SwiftUI demo that runs a [Cerbos](https://www.cerbos.dev) embedded policy decision point
+(ePDP) on the device: policies are downloaded from Cerbos Hub, evaluated locally by the Cerbos
+WebAssembly engine, kept up to date in the background, and cached for offline starts.
+
+```
+epdpdemo/            SwiftUI demo app (iOS 26, Swift 6)
+CerbosEmbeddedPDP/   Swift package: the ePDP engine wrapper (`CerbosEmbeddedPDP`)
+CerbosBridge/        Node project that builds the JavaScript bridge and stages the WASM assets
+```
+
+## How it works
+
+The current Cerbos ePDP has two parts (see the
+[Hub docs](https://docs.cerbos.dev/cerbos-hub/deployments-epdp-rules)):
+
+- `@cerbos/embedded-server` ships `server.wasm`, the policy evaluation engine (Go compiled to
+  WebAssembly, about 20 MB). It contains no policies.
+- `@cerbos/embedded-client` downloads a policy bundle for an *ePDP rule* from Cerbos Hub, loads it
+  into the engine, and polls Hub for updates.
+
+The engine is built for a JavaScript host (`GOOS=js`), so on iOS it runs inside a hidden `WKWebView`
+where WebKit gives WebAssembly a JIT. There is no JavaScriptCore-only route: `JSContext` has no
+WebAssembly, and running a 20 MB Go runtime in a native interpreter would take seconds to start.
+The web view is an implementation detail; the app only ever talks to `CerbosEmbeddedPDP`.
+
+```
+SwiftUI ─▶ CerbosEmbeddedPDP (@Observable, @MainActor)
+              │  callAsyncJavaScript(JSON)          ▲ script messages (JSON events)
+              ▼                                     │
+           hidden WKWebView ── cerbos-epdp://app/  (custom URL scheme, app bundle)
+              ├─ index.html + bridge.js  (@cerbos/embedded-client bundled with esbuild)
+              └─ server.wasm            (streamed into WebAssembly.instantiateStreaming)
+                        │
+                        └─ Cerbos Hub: BundleService/GetBundle (rule ID, optional credentials)
+```
+
+### What the wrapper adds on top of the SDK
+
+- **No CDN, no network for the runtime.** The bridge script and `server.wasm` are app resources,
+  served to the page by a `WKURLSchemeHandler` with the right MIME type. The WASM is memory-mapped
+  and streamed, never base64-encoded or copied through `postMessage`.
+- **Offline cold start.** The SDK keeps policies in memory only. The bridge observes the Hub
+  `GetBundle` responses, hands each bundle to Swift for persistence (`PolicyBundleCache`,
+  Application Support, excluded from backup), and replays the last one if the initial download
+  fails. Later update checks always go to Hub.
+- **Typed, structured bridge.** Requests are `Codable` types mirroring `@cerbos/core`; results,
+  gRPC status codes and validation errors come back as `CerbosError` / `BridgeError`. Nothing is
+  string-interpolated into JavaScript.
+- **Lifecycle handling.** Idempotent `start()`, readiness with timeout, automatic rebuild when WebKit
+  discards the content process in the background, `stop()`/`restart()` for credential changes.
+- **JWT verification stays native.** Pass `AuxData.jwt` and supply `Configuration.jwtDecoder`; the
+  bridge asks the app to verify and decode the token, the engine only sees the claims.
+- **Diagnostics.** Bridge logs, bundle metadata (ID, rule revision, source) and update outcomes are
+  observable; in Debug builds the web view is inspectable from Safari.
+
+## Using `CerbosEmbeddedPDP`
+
+```swift
+import CerbosEmbeddedPDP
+
+var configuration = CerbosEmbeddedPDP.Configuration(ruleId: "AVGB9RP6HFBL")
+configuration.credentials = .init(clientId: clientId, clientSecret: clientSecret) // if the rule requires it
+configuration.updateInterval = .seconds(60)
+configuration.jwtDecoder = { jwt in try await MyAuth.verify(jwt.token) }
+
+let pdp = CerbosEmbeddedPDP(configuration: configuration)
+await pdp.start()
+
+let response = try await pdp.checkResources(CheckResourcesRequest(
+    principal: Principal(id: "alice", roles: ["USER"], attributes: ["tier": "PREMIUM"]),
+    resources: [
+        ResourceCheck(resource: Resource(kind: "resource", id: "1", attributes: ["ownerId": "alice"]),
+                      actions: ["read", "update"])
+    ]
+))
+response.isAllowed(kind: "resource", id: "1", action: "update")
+```
+
+`checkResource`, `isAllowed` and `planResources` are also available. Batch the resources a screen
+needs into one `checkResources` call: each call is one round trip to the web content process.
+
+Observable state: `status`, `bundle`, `server`, `lastPolicyUpdate`, `logs`.
+
+## Building
+
+Requirements: Xcode 26 (Swift 6.2), iOS 26 SDK. Node is only needed to upgrade the Cerbos SDK.
+
+Open `epdpdemo.xcodeproj` and run. The demo starts with a public demo rule; enter your own rule ID
+(and client credentials for authenticated rules) and tap **Restart**. The secret is stored in the
+Keychain, never in source.
+
+### Upgrading the Cerbos SDK / engine
+
+```sh
+cd CerbosBridge
+npm install                       # bump @cerbos/* versions in package.json first
+npm run typecheck && npm run build  # regenerates CerbosEmbeddedPDP/Sources/.../Resources/web
+npm test                          # runs the built bridge in Node against the real WASM and Hub
+```
+
+`build.mjs` verifies `server.wasm` against the checksum published in `@cerbos/embedded-server`
+and writes `manifest.json` with the versions in use. The generated assets are committed so the
+Xcode project builds without Node.
+
+### Tests
+
+- `cd CerbosEmbeddedPDP && swift test` — request/response coding, bridge events, bundle cache
+  (runs on macOS and Linux).
+- `cd CerbosBridge && npm test` — end-to-end bridge smoke test: online init, checks, plan, JWT
+  callback, structured errors, offline start from the cached bundle.
+- The Xcode test target covers the demo's request builder.
+
+## Security notes
+
+- Client credentials in a shipped app can be extracted; prefer public rules with policy filtering
+  (resources, actions, roles, scopes) or a backend-for-frontend, as the Hub docs recommend.
+- The page never navigates away from its own scheme and has a non-persistent website data store.

@@ -23,6 +23,10 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		6AC0FFEE2E6F00010000A003 /* CerbosEmbeddedPDP in Frameworks */ = {isa = PBXBuildFile; productRef = 6AC0FFEE2E6F00010000A002 /* CerbosEmbeddedPDP */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		6A171A562DC7781B00AF1C51 /* epdpdemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = epdpdemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A171A642DC7781C00AF1C51 /* epdpdemoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = epdpdemoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6AC0FFEE2E6F00010000A003 /* CerbosEmbeddedPDP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = epdpdemo;
 			packageProductDependencies = (
+				6AC0FFEE2E6F00010000A002 /* CerbosEmbeddedPDP */,
 			);
 			productName = epdpdemo;
 			productReference = 6A171A562DC7781B00AF1C51 /* epdpdemo.app */;
@@ -170,8 +176,8 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1630;
-				LastUpgradeCheck = 1630;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					6A171A552DC7781B00AF1C51 = {
 						CreatedOnToolsVersion = 16.3;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 6A171A4D2DC7781B00AF1C51;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6AC0FFEE2E6F00010000A001 /* XCLocalSwiftPackageReference "CerbosEmbeddedPDP" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6A171A572DC7781B00AF1C51 /* Products */;
 			projectDirPath = "";
@@ -325,8 +334,12 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 			};
 			name = Debug;
 		};
@@ -379,7 +392,11 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 			};
 			name = Release;
 		};
@@ -403,7 +420,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -414,7 +431,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -439,7 +456,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -450,7 +467,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -462,18 +479,18 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
-				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.cerbos.epdp.epdpdemoTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/epdpdemo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/epdpdemo";
-				XROS_DEPLOYMENT_TARGET = 2.4;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -484,18 +501,18 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
-				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.cerbos.epdp.epdpdemoTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/epdpdemo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/epdpdemo";
-				XROS_DEPLOYMENT_TARGET = 2.4;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
@@ -505,18 +522,18 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
-				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.cerbos.epdp.epdpdemoUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_TARGET_NAME = epdpdemo;
-				XROS_DEPLOYMENT_TARGET = 2.4;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -526,22 +543,36 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.4;
-				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.cerbos.epdp.epdpdemoUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_TARGET_NAME = epdpdemo;
-				XROS_DEPLOYMENT_TARGET = 2.4;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6AC0FFEE2E6F00010000A001 /* XCLocalSwiftPackageReference "CerbosEmbeddedPDP" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = CerbosEmbeddedPDP;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6AC0FFEE2E6F00010000A002 /* CerbosEmbeddedPDP */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CerbosEmbeddedPDP;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		6A171A512DC7781B00AF1C51 /* Build configuration list for PBXProject "epdpdemo" */ = {

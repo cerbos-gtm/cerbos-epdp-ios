@@ -1,10 +1,3 @@
-//
-//  epdpdemoApp.swift
-//  epdpdemo
-//
-//  Created by Alex Olivier on 04/05/2025.
-//
-
 import SwiftUI
 
 @main
