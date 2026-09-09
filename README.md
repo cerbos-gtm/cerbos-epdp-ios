@@ -135,6 +135,14 @@ Xcode project builds without Node.
   engine or a hung network.
 - **Deferred activation.** With `activateOnLoad = false`, `bundle` stays on the active bundle and a
   downloaded update appears in `pendingBundle` until `activatePendingBundle()`.
+- **Web view hardening.** The page opts out of Lockdown Mode for its own trusted content (Lockdown
+  removes WebAssembly), runs under a Content Security Policy that allows only the bundled script,
+  WebAssembly compilation and HTTPS connections, and compiles the engine module once per page so
+  `reconfigure(_:)` and policy reloads never recompile it. A lost web content process is rebuilt
+  automatically (at most `maximumRestarts` per `restartWindow`), a check interrupted by that
+  loss is retried once, and `checkHealth()` on returning to the foreground rebuilds a dead page
+  before the first real check. Failures are classified as `engine` (WebAssembly missing or
+  broken), `policySource` (Hub rejected the request) or `initialisation`.
 - **Update cadence.** The SDK's loader polls on its interval and has no "check now"; after a long
   time in the background the next check happens within one interval. `restart()` forces a fresh
   download at the cost of recompiling the WebAssembly module.

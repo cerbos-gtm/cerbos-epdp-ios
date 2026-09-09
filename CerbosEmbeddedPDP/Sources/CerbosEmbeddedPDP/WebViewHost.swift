@@ -49,6 +49,9 @@ final class CerbosWebViewHost: NSObject {
         configuration.setURLSchemeHandler(BundleSchemeHandler(directory: resourcesDirectory), forURLScheme: Self.scheme)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        // Lockdown Mode removes WebAssembly from web views. The page only ever runs the bundled
+        // bridge and engine, so opt this trusted content out (allowed for an app's own content).
+        configuration.defaultWebpagePreferences.isLockdownModeEnabled = false
         configuration.suppressesIncrementalRendering = true
 
         let contentController = WKUserContentController()
@@ -227,7 +230,12 @@ private final class BridgeCallRace {
     var timer: Task<Void, Never>?
 
     func resume(_ result: Result<String, any Error>) {
-        guard let continuation else { return }
+        guard let continuation else {
+            if case .success = result {
+                CerbosLog.debug("A bridge call completed after its timeout; the late result was discarded")
+            }
+            return
+        }
         self.continuation = nil
         timer?.cancel()
         continuation.resume(with: result)

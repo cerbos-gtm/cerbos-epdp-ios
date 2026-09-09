@@ -62,6 +62,11 @@ public final class CerbosEmbeddedPDP {
         public var requestTimeout: Duration = .seconds(30)
         /// The first bundle download is aborted after this long so a stalled connection falls back to the offline cache.
         public var initialLoadTimeout: Duration = .seconds(20)
+        /// When a check fails because the web content process died, rebuild it and retry the check once.
+        public var retryAfterRecovery = true
+        /// How many automatic rebuilds are allowed within `restartWindow` before giving up until `start()` is called.
+        public var maximumRestarts = 3
+        public var restartWindow: Duration = .seconds(600)
 
         public var defaultPolicyVersion: String? = nil
         public var defaultScope: String? = nil
@@ -114,7 +119,7 @@ public final class CerbosEmbeddedPDP {
 
     // MARK: Observable state
 
-    public let configuration: Configuration
+    public private(set) var configuration: Configuration
     public private(set) var status: Status = .idle
     /// The policy bundle decisions are currently evaluated against.
     public private(set) var bundle: BundleInfo?
@@ -147,7 +152,7 @@ public final class CerbosEmbeddedPDP {
     @ObservationIgnored private let cache: PolicyBundleCache
     @ObservationIgnored private let resourcesError: CerbosError?
     @ObservationIgnored private var startTask: Task<Void, Never>?
-    @ObservationIgnored private var restartAttempts = 0
+    @ObservationIgnored private var restartTimes: [Date] = []
 
     // MARK: Lifecycle
 
@@ -173,11 +178,15 @@ public final class CerbosEmbeddedPDP {
     /// Loads the WebAssembly module and the policy bundle. Safe to call repeatedly; concurrent
     /// callers share one attempt. Call again after a failure to retry.
     public func start() async {
+        await start(force: false)
+    }
+
+    private func start(force: Bool) async {
         if let startTask {
             await startTask.value
             return
         }
-        if status == .ready {
+        if status == .ready, !force {
             return
         }
         let task = Task { await self.performStart() }
@@ -186,10 +195,42 @@ public final class CerbosEmbeddedPDP {
         startTask = nil
     }
 
-    /// Discards the current web view and starts again (for example after changing credentials).
+    /// Applies a new configuration (rule, scopes, credentials, options) without rebuilding the web view.
+    /// The already-compiled engine module is reused, so this is much cheaper than ``restart()``.
+    public func reconfigure(_ configuration: Configuration) async {
+        self.configuration = configuration
+        await start(force: true)
+    }
+
+    /// Discards the current web view and starts again from scratch, recompiling the engine.
     public func restart() async {
         stop()
         await start()
+    }
+
+    /// Verifies the web content process is still answering. Call it when the app returns to the
+    /// foreground: WebKit may have discarded the process while the app was suspended, and this
+    /// rebuilds it before the first real check instead of failing that check.
+    /// - Returns: `true` when the PDP is ready after the check.
+    @discardableResult
+    public func checkHealth() async -> Bool {
+        switch status {
+        case .ready:
+            do {
+                let _: BridgeStatusResult = try await host.invoke("status", timeout: .seconds(5), failure: { .initialisation($0) })
+                return true
+            } catch {
+                appendLog(level: "warn", "Health check failed (\(error.localizedDescription)); rebuilding the web view")
+                stop()
+                await start()
+                return status == .ready
+            }
+        case .failed:
+            await start()
+            return status == .ready
+        case .idle, .loading:
+            return false
+        }
     }
 
     /// Stops update polling and releases the web view. `start()` brings the PDP back.
@@ -213,18 +254,15 @@ public final class CerbosEmbeddedPDP {
     // MARK: Checks
 
     public func checkResources(_ request: CheckResourcesRequest) async throws(CerbosError) -> CheckResourcesResponse {
-        try ensureReady()
-        return try await host.invoke("checkResources", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
+        try await perform("checkResources", params: request)
     }
 
     public func checkResource(_ request: CheckResourceRequest) async throws(CerbosError) -> CheckResult {
-        try ensureReady()
-        return try await host.invoke("checkResource", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
+        try await perform("checkResource", params: request)
     }
 
     public func isAllowed(_ request: IsAllowedRequest) async throws(CerbosError) -> Bool {
-        try ensureReady()
-        return try await host.invoke("isAllowed", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
+        try await perform("isAllowed", params: request)
     }
 
     public func isAllowed(
@@ -234,11 +272,29 @@ public final class CerbosEmbeddedPDP {
     }
 
     public func planResources(_ request: PlanResourcesRequest) async throws(CerbosError) -> PlanResourcesResponse {
-        try ensureReady()
-        return try await host.invoke("planResources", params: request, timeout: configuration.requestTimeout, failure: { .request($0) })
+        try await perform("planResources", params: request)
     }
 
     // MARK: Internals
+
+    /// Runs a bridge call, and if the web content process died underneath it, rebuilds once and retries.
+    private func perform<Result: Decodable>(_ method: String, params: some Encodable) async throws(CerbosError) -> Result {
+        try ensureReady()
+        do {
+            return try await host.invoke(method, params: params, timeout: configuration.requestTimeout, failure: { .request($0) })
+        } catch {
+            guard error.isWebViewFailure, configuration.retryAfterRecovery else {
+                throw error
+            }
+            appendLog(
+                level: "warn", "\(method) failed because the web view is gone (\(error.localizedDescription)); recovering and retrying once"
+            )
+            // Force a rebuild even if the termination notice has not arrived yet; concurrent starts coalesce.
+            await start(force: true)
+            try ensureReady()
+            return try await host.invoke(method, params: params, timeout: configuration.requestTimeout, failure: { .request($0) })
+        }
+    }
 
     private func ensureReady() throws(CerbosError) {
         guard status == .ready else {
@@ -265,12 +321,11 @@ public final class CerbosEmbeddedPDP {
                 "init",
                 params: initParams(cachedBundle: cachedBundle),
                 timeout: configuration.startTimeout,
-                failure: { .initialisation($0) }
+                failure: { CerbosError.initialisationFailure($0) }
             )
             bundle = result.bundle
             pendingBundle = result.pending
             server = result.server
-            restartAttempts = 0
             status = .ready
             CerbosLog.info(
                 "Cerbos embedded PDP ready (bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?"))")
@@ -400,15 +455,26 @@ public final class CerbosEmbeddedPDP {
 
     private func handleProcessTermination() {
         // WebKit may reclaim the content process while the app is in the background.
-        // Rebuild it (the offline cache makes this cheap even without connectivity).
+        // Rebuild it (the offline cache makes this cheap even without connectivity), within a budget.
         status = .failed(.webView(reason: "web content process terminated"))
         bundle = nil
-        guard restartAttempts < 3 else {
-            appendLog(level: "error", "Web content process terminated repeatedly; giving up. Call start() to retry.")
+        pendingBundle = nil
+
+        let now = Date()
+        let windowStart = now.addingTimeInterval(-Double(configuration.restartWindow.components.seconds))
+        restartTimes.removeAll { $0 < windowStart }
+        guard restartTimes.count < configuration.maximumRestarts else {
+            appendLog(
+                level: "error",
+                "Web content process terminated \(restartTimes.count) times within \(configuration.restartWindow); "
+                    + "not restarting automatically. Call start() to retry."
+            )
             return
         }
-        restartAttempts += 1
-        appendLog(level: "warn", "Web content process terminated; restarting (attempt \(restartAttempts))")
+        restartTimes.append(now)
+        appendLog(
+            level: "warn",
+            "Web content process terminated; restarting (\(restartTimes.count)/\(configuration.maximumRestarts) in the current window)")
         Task { await self.start() }
     }
 

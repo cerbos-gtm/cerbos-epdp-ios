@@ -16,10 +16,17 @@ const wasmBytes = await readFile(path.join(webDir, "server.wasm"));
 const realFetch = globalThis.fetch.bind(globalThis);
 // How the fake network answers GetBundle: "online" | "offline" | "hang" | "forbidden" | "portal" | "outage"
 let hubMode = "online";
+// Whether server.wasm can be fetched; counts how often the page asked for it.
+let wasmAvailable = true;
+let wasmFetches = 0;
 
 globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   if (url === "server.wasm" || url.endsWith("/server.wasm")) {
+    wasmFetches++;
+    if (!wasmAvailable) {
+      return new Response("missing", { status: 404, headers: { "content-type": "text/plain" } });
+    }
     return new Response(wasmBytes, { status: 200, headers: { "content-type": "application/wasm" } });
   }
   if (url.includes("/GetBundle")) {
@@ -83,6 +90,14 @@ const request = {
   ],
   includeMetadata: true,
 };
+
+// --- 0. An engine failure is classified as such and does not poison the module cache ----------
+wasmAvailable = false;
+await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0 }), (error) => {
+  assert.equal(error.serialized.kind, "engine", `expected an engine error, got ${JSON.stringify(error.serialized)}`);
+  return true;
+});
+wasmAvailable = true;
 
 // --- 1. Online initialisation -------------------------------------------------------------------
 let started = performance.now();
@@ -167,6 +182,7 @@ assert.equal(outage.bundle.source, "cache");
 hubMode = "forbidden";
 await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle }), (error) => {
   assert.equal(error.serialized.code, 7, "expected gRPC PERMISSION_DENIED");
+  assert.equal(error.serialized.kind, "policySource");
   return true;
 });
 assert.equal((await invoke("status")).status, "failed");
@@ -182,6 +198,9 @@ assert.equal(winner.status, "fulfilled");
 assert.equal(winner.value.status, "ready");
 assert.equal((await invoke("status")).status, "ready");
 assert.equal((await invoke("checkResources", request)).results.length, 2);
+
+// --- 9. The engine module was compiled once and reused by every init ------------------------------
+assert.equal(wasmFetches, 2, `server.wasm fetched ${wasmFetches} times (one failed probe, one compile)`);
 
 await invoke("stop");
 console.log("smoke test passed");

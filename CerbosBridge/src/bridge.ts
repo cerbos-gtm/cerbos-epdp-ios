@@ -6,7 +6,7 @@
 import type { JWT } from "@cerbos/core";
 
 import type { BridgeEvent } from "./core.js";
-import { CerbosBridgeCore } from "./core.js";
+import { CerbosBridgeCore, EngineError } from "./core.js";
 
 interface MessageHandler {
   postMessage(message: unknown): unknown;
@@ -53,17 +53,42 @@ function requestFromHost(event: Extract<BridgeEvent, { id: string }>): Promise<u
   });
 }
 
+// The engine module is compiled once per page and reused by every `init`, so reconfiguring the
+// client (new rule, new credentials) or recovering from a failed policy load does not pay the
+// 20 MB compile again. Only a lost web content process forces a recompile.
+let compiledModule: Promise<WebAssembly.Module> | undefined;
+
+function loadEngineModule(): Promise<WebAssembly.Module> {
+  if (typeof WebAssembly === "undefined" || typeof WebAssembly.compileStreaming !== "function") {
+    return Promise.reject(new EngineError("WebAssembly streaming compilation is not available in this web view"));
+  }
+  compiledModule ??= (async () => {
+    // Served by the native URL scheme handler with `Content-Type: application/wasm`, so WebKit
+    // streams it straight into the compiler (no base64, no copies).
+    let response: Response;
+    try {
+      response = await fetch("server.wasm");
+    } catch (error) {
+      throw new EngineError(`Failed to load server.wasm: ${String(error)}`);
+    }
+    if (!response.ok) {
+      throw new EngineError(`Failed to load server.wasm: HTTP ${response.status}`);
+    }
+    try {
+      return await WebAssembly.compileStreaming(response);
+    } catch (error) {
+      throw new EngineError(`Failed to compile server.wasm: ${String(error)}`);
+    }
+  })();
+  compiledModule.catch(() => {
+    compiledModule = undefined;
+  });
+  return compiledModule;
+}
+
 const core = new CerbosBridgeCore({
   emit,
-  loadWasm: async () => {
-    // Served by the native URL scheme handler with `Content-Type: application/wasm`,
-    // so WebKit compiles it with `WebAssembly.instantiateStreaming` (no base64, no copies).
-    const response = await fetch("server.wasm");
-    if (!response.ok) {
-      throw new Error(`Failed to load server.wasm: HTTP ${response.status}`);
-    }
-    return response;
-  },
+  loadWasm: loadEngineModule,
   decodeJWTPayload: async (jwt: JWT) => {
     const id = `jwt-${Date.now()}-${callbackCounter++}`;
     const payload = await requestFromHost({ type: "jwtDecode", id, token: jwt.token, keySetId: jwt.keySetId ?? "" });

@@ -11,7 +11,14 @@ public enum CerbosError: Error, Sendable, Equatable {
     /// The bridge script did not become ready in time.
     case timeout(operation: String)
 
-    /// The embedded client failed to initialise (WASM instantiation or initial policy bundle load).
+    /// The engine cannot run: WebAssembly is unavailable in the web view (for example Lockdown Mode)
+    /// or the bundled `server.wasm` failed to load or compile.
+    case engine(reason: String)
+
+    /// Cerbos Hub rejected or could not serve the policy bundle (see `BridgeError.code` for the gRPC status).
+    case policySource(BridgeError)
+
+    /// The embedded client failed to initialise for another reason.
     case initialisation(BridgeError)
 
     /// The embedded PDP rejected the request (gRPC status semantics, see `BridgeError.code`).
@@ -32,6 +39,8 @@ public struct BridgeError: Sendable, Equatable, Codable {
     /// `NotOK` (gRPC-style failure from the PDP), `ValidationFailed`, or a JavaScript error name.
     public var name: String
     public var message: String
+    /// `engine`, `policySource` or `bridge` for initialisation failures.
+    public var kind: String?
     /// gRPC status code for `NotOK` errors (for example `3` for invalid argument, `14` for unavailable).
     public var code: Int?
     public var details: String?
@@ -39,11 +48,12 @@ public struct BridgeError: Sendable, Equatable, Codable {
     public var stack: String?
 
     public init(
-        name: String, message: String, code: Int? = nil, details: String? = nil, validationErrors: [ValidationError]? = nil,
-        stack: String? = nil
+        name: String, message: String, kind: String? = nil, code: Int? = nil, details: String? = nil,
+        validationErrors: [ValidationError]? = nil, stack: String? = nil
     ) {
         self.name = name
         self.message = message
+        self.kind = kind
         self.code = code
         self.details = details
         self.validationErrors = validationErrors
@@ -60,6 +70,10 @@ extension CerbosError: LocalizedError {
             return "The embedded PDP web content process failed: \(reason)"
         case .timeout(let operation):
             return "Timed out waiting for the embedded PDP to \(operation)."
+        case .engine(let reason):
+            return "The embedded PDP engine cannot run: \(reason)"
+        case .policySource(let error):
+            return "Cerbos Hub could not provide the policy bundle: \(error.message)"
         case .initialisation(let error):
             return "Failed to initialise the embedded PDP: \(error.message)"
         case .request(let error):
@@ -71,5 +85,25 @@ extension CerbosError: LocalizedError {
         case .cache(let reason):
             return "Policy bundle cache error: \(reason)"
         }
+    }
+}
+
+extension CerbosError {
+    /// Maps a failed bridge `init` to the most specific error case using the bridge's classification.
+    static func initialisationFailure(_ error: BridgeError) -> CerbosError {
+        switch error.kind {
+        case "engine":
+            return .engine(reason: error.message)
+        case "policySource":
+            return .policySource(error)
+        default:
+            return .initialisation(error)
+        }
+    }
+
+    /// Whether the failure means the web content process is gone and a restart may recover.
+    var isWebViewFailure: Bool {
+        if case .webView = self { return true }
+        return false
     }
 }

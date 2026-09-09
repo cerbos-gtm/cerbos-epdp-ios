@@ -99,6 +99,18 @@ struct ResponseDecodingTests {
         #expect(second.outputs.isEmpty)
     }
 
+    @Test("initialisation failures map to engine, policy source or generic errors")
+    func initialisationClassification() {
+        let engine = BridgeError(name: "WebAssemblyUnavailable", message: "no wasm", kind: "engine")
+        #expect(CerbosError.initialisationFailure(engine) == .engine(reason: "no wasm"))
+        let hub = BridgeError(name: "NotOK", message: "denied", kind: "policySource", code: 7)
+        #expect(CerbosError.initialisationFailure(hub) == .policySource(hub))
+        let other = BridgeError(name: "Error", message: "boom")
+        #expect(CerbosError.initialisationFailure(other) == .initialisation(other))
+        #expect(CerbosError.webView(reason: "gone").isWebViewFailure)
+        #expect(!CerbosError.notReady.isWebViewFailure)
+    }
+
     @Test("unknown effects decode as deny without failing the response")
     func unknownEffect() throws {
         let response = try BridgeJSON.unwrap(

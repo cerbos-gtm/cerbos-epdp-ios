@@ -38,10 +38,10 @@ struct ContentView: View {
                 ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(placement: .primaryAction) {
                     Menu("More", systemImage: "ellipsis") {
-                        Button("Restart", systemImage: "arrow.clockwise") {
-                            Task { await startPDP() }
+                        Button("Restart engine", systemImage: "arrow.clockwise") {
+                            Task { await pdp?.restart() }
                         }
-                        .disabled(pdp?.status == .loading)
+                        .disabled(pdp == nil || pdp?.status == .loading)
                         Button("Clear offline cache", systemImage: "trash", role: .destructive) {
                             Task { await pdp?.clearOfflineCache() }
                         }
@@ -60,9 +60,10 @@ struct ContentView: View {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                // WebKit can discard the content process in the background; recover on return.
-                guard phase == .active, let pdp, case .failed = pdp.status else { return }
-                Task { await pdp.start() }
+                // WebKit may discard the content process while the app is suspended; verify and
+                // rebuild on return instead of failing the first check.
+                guard phase == .active, let pdp else { return }
+                Task { await pdp.checkHealth() }
             }
         }
     }
@@ -193,10 +194,7 @@ struct ContentView: View {
 
     // MARK: Actions
 
-    private func startPDP() async {
-        pdp?.stop()
-        Keychain.set(clientSecret, for: Keychain.clientSecretKey)
-
+    private func makeConfiguration() -> CerbosEmbeddedPDP.Configuration {
         var configuration = CerbosEmbeddedPDP.Configuration(ruleId: ruleId)
         let trimmedURL = hubBaseURL.trimmingCharacters(in: .whitespaces)
         if !trimmedURL.isEmpty, let url = URL(string: trimmedURL) {
@@ -206,12 +204,23 @@ struct ContentView: View {
         if !trimmedClientId.isEmpty, !clientSecret.isEmpty {
             configuration.credentials = .init(clientId: trimmedClientId, clientSecret: clientSecret)
         }
+        return configuration
+    }
 
-        let pdp = CerbosEmbeddedPDP(configuration: configuration)
-        self.pdp = pdp
+    /// First start creates the single PDP instance; later applies reconfigure it in place, which
+    /// reuses the already-compiled engine instead of rebuilding the web view.
+    private func startPDP() async {
+        Keychain.set(clientSecret, for: Keychain.clientSecretKey)
         lastResult = nil
         checkError = nil
-        await pdp.start()
+        let configuration = makeConfiguration()
+        if let pdp {
+            await pdp.reconfigure(configuration)
+        } else {
+            let pdp = CerbosEmbeddedPDP(configuration: configuration)
+            self.pdp = pdp
+            await pdp.start()
+        }
     }
 
     private func runCheck() async {

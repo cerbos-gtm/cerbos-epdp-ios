@@ -8,7 +8,7 @@ import type {
   ValidationError,
   Value,
 } from "@cerbos/core";
-import { NotOK, ValidationFailed } from "@cerbos/core";
+import { NotOK, Status, ValidationFailed } from "@cerbos/core";
 import type {
   DecodedJWTPayload,
   Options as EmbeddedOptions,
@@ -22,9 +22,17 @@ import { HubBundleCache } from "./hub-bundle-cache.js";
 
 export type BridgeStatus = "idle" | "loading" | "ready" | "failed";
 
+export type ErrorKind = "engine" | "policySource" | "bridge";
+
 export interface SerializedError {
   name: string;
   message: string;
+  /**
+   * Coarse classification for initialisation failures: `engine` (WebAssembly unavailable or the
+   * module failed to load), `policySource` (Cerbos Hub rejected or could not serve the bundle),
+   * or `bridge` (anything else).
+   */
+  kind?: ErrorKind;
   /** gRPC status code for `NotOK` errors. */
   code?: number;
   details?: string;
@@ -43,6 +51,20 @@ export type BridgeEvent =
   | { type: "bundleCache"; key: string; body: string; bundleId: string; ruleRevision: string }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string }
   | { type: "jwtDecode"; id: string; token: string; keySetId: string };
+
+/** Thrown when the engine's WebAssembly module cannot be obtained or compiled. */
+export class EngineError extends Error {
+  public override readonly name = "EngineError";
+}
+
+/** Thrown when the JavaScript engine has no WebAssembly support (for example iOS Lockdown Mode). */
+export class WebAssemblyUnavailableError extends Error {
+  public override readonly name = "WebAssemblyUnavailable";
+
+  public constructor() {
+    super("WebAssembly is not available in this web view (is Lockdown Mode enabled?)");
+  }
+}
 
 export interface BridgeHost {
   emit(event: BridgeEvent): void;
@@ -194,6 +216,13 @@ export class CerbosBridgeCore {
     const generation = ++this.generation;
     this.stop();
     this.setStatus("loading");
+
+    if (typeof WebAssembly === "undefined" || typeof WebAssembly.instantiate !== "function") {
+      const error = new WebAssemblyUnavailableError();
+      this.lastError = serializeError(error);
+      this.setStatus("failed", this.lastError);
+      throw error;
+    }
     this.activateOnLoad = params.activateOnLoad ?? true;
 
     const { ruleId, scopes = [], hub = {}, options = {} } = params;
@@ -273,9 +302,10 @@ export class CerbosBridgeCore {
         throw error;
       }
       this.lastError = serializeError(error);
+      this.lastError.kind = classifyInitError(error);
       this.setStatus("failed", this.lastError);
       this.stop();
-      throw error;
+      throw new InitError(error, this.lastError.kind);
     }
 
     if (generation !== this.generation) {
@@ -370,7 +400,58 @@ function schemaEnforcement(value: "none" | "warn" | "reject"): SchemaEnforcement
   }
 }
 
+/** Wraps the cause of a failed `init` so the envelope carries its classification. */
+class InitError extends Error {
+  public constructor(
+    public override readonly cause: unknown,
+    public readonly kind: ErrorKind,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = cause instanceof Error ? cause.name : "Error";
+  }
+}
+
+export function classifyInitError(error: unknown): ErrorKind {
+  // The client wraps most failures in NotOK(UNKNOWN, ..., { cause }), so classify the whole chain.
+  const chain = causeChain(error);
+  if (chain.some(isEngineError)) {
+    return "engine";
+  }
+  const notOK = chain.find((item): item is NotOK => item instanceof NotOK);
+  if (notOK) {
+    const root = chain[chain.length - 1];
+    const rootIsTransport = root instanceof NotOK || (root instanceof Error && root.name === "ConnectError");
+    return notOK.code === Status.UNKNOWN && !rootIsTransport ? "bridge" : "policySource";
+  }
+  return "bridge";
+}
+
+function causeChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let current = error;
+  while (current !== undefined && current !== null && chain.length < 10 && !chain.includes(current)) {
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return chain;
+}
+
+function isEngineError(error: unknown): boolean {
+  if (error instanceof WebAssemblyUnavailableError || error instanceof EngineError) {
+    return true;
+  }
+  return (
+    typeof WebAssembly !== "undefined"
+    && (error instanceof WebAssembly.CompileError || error instanceof WebAssembly.LinkError || error instanceof WebAssembly.RuntimeError)
+  );
+}
+
 export function serializeError(error: unknown): SerializedError {
+  if (error instanceof InitError) {
+    const serialized = serializeError(error.cause);
+    serialized.kind = error.kind;
+    return serialized;
+  }
   if (error instanceof NotOK) {
     return { name: "NotOK", message: error.message, code: error.code, details: error.details };
   }

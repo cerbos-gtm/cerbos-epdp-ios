@@ -68,6 +68,17 @@ struct EmbeddedPDPIntegrationTests {
         )
         #expect([PlanKind.alwaysAllowed, .alwaysDenied, .conditional].contains(plan.kind))
 
+        // 2b. Reconfiguring reuses the compiled engine (fast) and the health check passes.
+        var reconfigured = configuration
+        reconfigured.scopes = []
+        let reconfigureStart = ContinuousClock.now
+        await online.reconfigure(reconfigured)
+        #expect(online.status == .ready, "reconfigure failed: \(online.status)")
+        #expect(online.bundle?.source == .network)
+        let reconfigureDuration = ContinuousClock.now - reconfigureStart
+        #expect(reconfigureDuration < .seconds(60))
+        #expect(await online.checkHealth())
+
         // 3. The bundle was persisted for offline starts (the cache write is asynchronous).
         let onlineKey = online.offlineCacheKey
         var cached = await cache.load(key: onlineKey)
