@@ -50,8 +50,12 @@ final class CerbosWebViewHost: NSObject {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         // Lockdown Mode removes WebAssembly from web views. The page only ever runs the bundled
-        // bridge and engine, so opt this trusted content out (allowed for an app's own content).
-        configuration.defaultWebpagePreferences.isLockdownModeEnabled = false
+        // bridge and engine, so opt this trusted content out when the user has Lockdown Mode on.
+        // The setter is only touched in that case; the default already reflects the system setting.
+        if configuration.defaultWebpagePreferences.isLockdownModeEnabled {
+            CerbosLog.info("Lockdown Mode is enabled; opting the embedded PDP page out for its bundled content")
+            configuration.defaultWebpagePreferences.isLockdownModeEnabled = false
+        }
         configuration.suppressesIncrementalRendering = true
 
         let contentController = WKUserContentController()

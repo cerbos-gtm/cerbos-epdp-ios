@@ -68,3 +68,15 @@ jobs:
             -destination "id=$DEVICE" \
             -only-testing:epdpdemoTests \
             CODE_SIGNING_ALLOWED=NO
+      - name: Crash reports and simulator log (on failure)
+        if: failure()
+        run: |
+          echo "::group::Crash reports"
+          ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -5
+          for report in $(ls -t ~/Library/Logs/DiagnosticReports/epdpdemo* 2>/dev/null | head -2); do
+            echo "=== $report"; head -c 20000 "$report"; echo
+          done
+          echo "::endgroup::"
+          echo "::group::Simulator log (epdpdemo, last 5 minutes)"
+          xcrun simctl spawn booted log show --last 5m --style compact --predicate 'process == "epdpdemo" OR eventMessage CONTAINS "epdpdemo"' 2>/dev/null | tail -200 || true
+          echo "::endgroup::"
