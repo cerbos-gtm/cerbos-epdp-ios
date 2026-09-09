@@ -103,7 +103,8 @@ struct ResponseDecodingTests {
     func unknownEffect() throws {
         let response = try BridgeJSON.unwrap(
             CheckResourcesResponse.self,
-            envelopeJSON: #"{"ok":true,"result":{"requestId":"r","results":[{"resource":{"kind":"k","id":"1"},"actions":{"read":"EFFECT_ALLOW","edit":"EFFECT_SOMETHING_NEW"}}]}}"#,
+            envelopeJSON: #"{"ok":true,"result":{"requestId":"r","results":[{"resource":{"kind":"k","id":"1"},"#
+                + #""actions":{"read":"EFFECT_ALLOW","edit":"EFFECT_SOMETHING_NEW"}}]}}"#,
             failure: { .request($0) }
         )
         #expect(response.isAllowed(kind: "k", id: "1", action: "read"))
