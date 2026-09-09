@@ -11,26 +11,29 @@ enum CerbosLog {
     #endif
 
     static func debug(_ message: @autoclosure () -> String) {
+        let text = message()
         #if canImport(os)
-        logger.debug("\(message(), privacy: .public)")
+        logger.debug("\(text, privacy: .public)")
         #else
-        emit("DEBUG", message())
+        emit("DEBUG", text)
         #endif
     }
 
     static func info(_ message: @autoclosure () -> String) {
+        let text = message()
         #if canImport(os)
-        logger.info("\(message(), privacy: .public)")
+        logger.info("\(text, privacy: .public)")
         #else
-        emit("INFO", message())
+        emit("INFO", text)
         #endif
     }
 
     static func error(_ message: @autoclosure () -> String) {
+        let text = message()
         #if canImport(os)
-        logger.error("\(message(), privacy: .public)")
+        logger.error("\(text, privacy: .public)")
         #else
-        emit("ERROR", message())
+        emit("ERROR", text)
         #endif
     }
 

@@ -127,11 +127,13 @@ final class CerbosWebViewHost: NSObject {
 
         let value: Any?
         do {
+            // The async overlay uses the `contentWorld:` label; `in:in:` would silently pick the
+            // completion-handler overload and return immediately.
             value = try await webView.callAsyncJavaScript(
                 "return await window.CerbosBridge.invoke(method, params);",
                 arguments: arguments,
                 in: nil,
-                in: .page
+                contentWorld: .page
             )
         } catch {
             throw CerbosError.webView(reason: Self.describe(error))
