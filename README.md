@@ -112,7 +112,12 @@ Xcode project builds without Node.
   (runs on macOS and Linux).
 - `cd CerbosBridge && npm test` — end-to-end bridge smoke test: online init, checks, plan, JWT
   callback, structured errors, offline start from the cached bundle.
-- The Xcode test target covers the demo's request builder.
+- Integration test (`epdpdemoTests/EmbeddedPDPIntegrationTests.swift`, and a macOS copy in the
+  package tests): starts a real `CerbosEmbeddedPDP` against the public demo rule inside the app on
+  the simulator, runs checks and a plan, verifies the bundle was cached, then restarts with an
+  unreachable Hub URL and asserts it comes up from the cache. Needs network access; set
+  `CERBOS_RULE_ID` to use another public rule.
+- The Xcode test target also covers the demo's request builder.
 - CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request: the bridge
   on Node 22 (and checks the committed assets match the build), the package on Linux and macOS,
   and the app on the iOS simulator with Xcode 26. Dependabot keeps the npm packages and workflow
