@@ -1,16 +1,21 @@
-//
-//  epdpdemoTests.swift
-//  epdpdemoTests
-//
-//  Created by Alex Olivier on 04/05/2025.
-//
-
+import CerbosEmbeddedPDP
 import Testing
 
-struct epdpdemoTests {
+@testable import epdpdemo
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+struct DemoScenarioTests {
+    @Test func ownedResourceUsesPrincipalAsOwner() {
+        let scenario = DemoScenario(principalId: "alice@example.com", role: "USER", ownsResource: true)
+        let request = scenario.request()
+        #expect(request.principal.roles == ["USER"])
+        #expect(request.resources.first?.resource.kind == DemoScenario.resourceKind)
+        #expect(request.resources.first?.resource.attributes["ownerId"] == "alice@example.com")
+        #expect(request.resources.first?.actions == DemoScenario.actions)
+        #expect(request.includeMetadata)
     }
 
+    @Test func foreignResourceUsesAnotherOwner() {
+        let scenario = DemoScenario(principalId: "alice@example.com", role: "ADMIN", ownsResource: false)
+        #expect(scenario.request().resources.first?.resource.attributes["ownerId"] == "someone-else@example.com")
+    }
 }

@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /CerbosBridge
+    schedule:
+      interval: weekly
+    groups:
+      cerbos:
+        patterns: ["@cerbos/*", "@bufbuild/*"]
+      tooling:
+        patterns: ["esbuild", "typescript"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
