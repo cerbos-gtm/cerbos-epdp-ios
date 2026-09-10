@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: CerbosBridge
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -40,7 +40,7 @@ jobs:
       run:
         working-directory: CerbosEmbeddedPDP
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: swift format lint --strict --recursive Sources Tests ../epdpdemo ../epdpdemoTests
       - run: swift build
       - run: swift test
@@ -49,7 +49,7 @@ jobs:
     name: Swift package and app (Xcode 26)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Select Xcode 26
         run: |
           XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
