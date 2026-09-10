@@ -77,9 +77,10 @@ await writeFile(
 );
 
 // 4. Manifest consumed by the Swift side (versions, checksum) and by humans reviewing upgrades.
+// Deliberately free of timestamps so that a rebuild from the same inputs is byte-identical and CI
+// can detect a stale or hand-edited manifest with `git diff --exit-code`.
 const bridgeStat = await stat(path.join(outDir, "bridge.js"));
 const manifest = {
-  builtAt: new Date().toISOString(),
   versions,
   server: serverMetadata,
   wasm: { byteCount: wasmBytes.byteLength, sha256: wasmSHA256 },

@@ -1,13 +1,15 @@
-#if os(macOS) && canImport(WebKit)
+#if canImport(WebKit)
 import CerbosEmbeddedPDP
 import Foundation
 import Testing
 
-/// Exercises the whole stack in the package test process on macOS: the hidden web view, the URL scheme
-/// handler streaming `server.wasm` into WebKit, the JavaScript bridge, a real policy bundle from
-/// Cerbos Hub, decisions, and the offline replay of the cached bundle.
+/// Exercises the whole stack (in the package test process on macOS, or inside the demo app on the
+/// simulator): the hidden web view, the URL scheme handler streaming `server.wasm` into WebKit, the
+/// JavaScript bridge, a real policy bundle from Cerbos Hub, decisions, and the offline replay of the
+/// cached bundle.
 ///
-/// Requires network access to `api.cerbos.cloud`. Override the rule with `CERBOS_RULE_ID`.
+/// Requires network access to `api.cerbos.cloud`. Override the rule with `CERBOS_RULE_ID`
+/// (`TEST_RUNNER_CERBOS_RULE_ID` when running through `xcodebuild test`).
 @Suite("Embedded PDP integration", .serialized)
 @MainActor
 struct EmbeddedPDPIntegrationTests {
@@ -113,8 +115,9 @@ struct EmbeddedPDPIntegrationTests {
         offline.stop()
 
         // 5. Offline start without a cached bundle fails cleanly instead of hanging.
-        let uncached = CerbosEmbeddedPDP(
-            configuration: offlineConfiguration, cache: PolicyBundleCache(directory: Self.temporaryDirectory()))
+        let uncachedDirectory = Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: uncachedDirectory) }
+        let uncached = CerbosEmbeddedPDP(configuration: offlineConfiguration, cache: PolicyBundleCache(directory: uncachedDirectory))
         await uncached.start()
         guard case .failed(let error) = uncached.status else {
             Issue.record("expected the uncached offline start to fail, got \(uncached.status)")

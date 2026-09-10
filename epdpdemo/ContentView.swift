@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var lastResult: CheckResult?
     @State private var lastDuration: Duration?
     @State private var checkError: String?
+    @State private var settingsError: String?
     @State private var isChecking = false
     @State private var showsHubSettings = false
 
@@ -34,6 +35,7 @@ struct ContentView: View {
                     Button("Cerbos Hub settings", systemImage: "slider.horizontal.3") {
                         showsHubSettings = true
                     }
+                    .accessibilityIdentifier("hubSettingsButton")
                 }
                 ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(placement: .primaryAction) {
@@ -50,7 +52,10 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showsHubSettings) {
-                HubSettingsView(ruleId: $ruleId, hubBaseURL: $hubBaseURL, clientId: $clientId, clientSecret: $clientSecret) {
+                HubSettingsView(
+                    ruleId: $ruleId, hubBaseURL: $hubBaseURL, clientId: $clientId, clientSecret: $clientSecret,
+                    isLoading: pdp?.status == .loading
+                ) {
                     Task { await startPDP() }
                 }
             }
@@ -105,6 +110,11 @@ struct ContentView: View {
                     Button("Try again", systemImage: "arrow.clockwise") {
                         Task { await pdp.start() }
                     }
+                }
+                if let settingsError {
+                    Label(settingsError, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.footnote)
                 }
             } else {
                 ContentUnavailableView(
@@ -196,8 +206,7 @@ struct ContentView: View {
 
     private func makeConfiguration() -> CerbosEmbeddedPDP.Configuration {
         var configuration = CerbosEmbeddedPDP.Configuration(ruleId: ruleId)
-        let trimmedURL = hubBaseURL.trimmingCharacters(in: .whitespaces)
-        if !trimmedURL.isEmpty, let url = URL(string: trimmedURL) {
+        if let url = HubURLValidation.url(from: hubBaseURL) {
             configuration.hubBaseURL = url
         }
         let trimmedClientId = clientId.trimmingCharacters(in: .whitespaces)
@@ -210,9 +219,15 @@ struct ContentView: View {
     /// First start creates the single PDP instance; later applies reconfigure it in place, which
     /// reuses the already-compiled engine instead of rebuilding the web view.
     private func startPDP() async {
-        Keychain.set(clientSecret, for: Keychain.clientSecretKey)
         lastResult = nil
         checkError = nil
+        settingsError = nil
+        if clientSecret != (Keychain.string(for: Keychain.clientSecretKey) ?? "") {
+            let status = Keychain.set(clientSecret, for: Keychain.clientSecretKey)
+            if status != errSecSuccess {
+                settingsError = "The client secret was not stored in the Keychain: \(Keychain.message(for: status))"
+            }
+        }
         let configuration = makeConfiguration()
         if let pdp {
             await pdp.reconfigure(configuration)
@@ -242,13 +257,41 @@ struct ContentView: View {
 
 // MARK: - Hub settings
 
+/// Validates the optional Hub base URL before it reaches the PDP, so a bad value is reported in the
+/// form instead of surfacing as an opaque network failure from the web view's Content Security Policy.
+enum HubURLValidation {
+    private static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    /// Returns a message naming the offending value, or `nil` when the text is empty or acceptable.
+    static func problem(with text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), let host = url.host(), !host.isEmpty else {
+            return "“\(trimmed)” is not a valid URL. Enter a full URL such as https://api.cerbos.cloud."
+        }
+        guard scheme == "https" || (scheme == "http" && loopbackHosts.contains(host.lowercased())) else {
+            return "“\(trimmed)” must use https. Plain http is only allowed for localhost."
+        }
+        return nil
+    }
+
+    /// The URL to configure, or `nil` when the text is empty or invalid (the default Hub URL applies).
+    static func url(from text: String) -> URL? {
+        guard problem(with: text) == nil else { return nil }
+        return URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+}
+
 private struct HubSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var ruleId: String
     @Binding var hubBaseURL: String
     @Binding var clientId: String
     @Binding var clientSecret: String
+    let isLoading: Bool
     let onApply: () -> Void
+
+    @State private var urlError: String?
 
     var body: some View {
         NavigationStack {
@@ -264,7 +307,15 @@ private struct HubSettingsView: View {
                 } header: {
                     Text("Embedded PDP rule")
                 } footer: {
-                    Text("Copy the rule ID from the deployment's Embedded PDP rules tab in Cerbos Hub.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Copy the rule ID from the deployment's Embedded PDP rules tab in Cerbos Hub.")
+                        if let urlError {
+                            Text(urlError).foregroundStyle(.red)
+                        }
+                        if isLoading {
+                            Text("Wait for the current load to finish before applying changes.")
+                        }
+                    }
                 }
                 Section {
                     TextField("Client ID", text: $clientId)
@@ -285,12 +336,17 @@ private struct HubSettingsView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Apply", role: .confirm) {
+                        if let problem = HubURLValidation.problem(with: hubBaseURL) {
+                            urlError = problem
+                            return
+                        }
                         dismiss()
                         onApply()
                     }
-                    .disabled(ruleId.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(ruleId.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
                 }
             }
+            .onChange(of: hubBaseURL) { _, _ in urlError = nil }
         }
     }
 }
@@ -306,7 +362,9 @@ private struct StatusBanner: View {
                 .font(.title2)
                 .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                Text(title)
+                    .font(.headline)
+                    .accessibilityIdentifier("statusTitle")
                 if let detail {
                     Text(detail).font(.footnote).foregroundStyle(.secondary)
                 }

@@ -1,5 +1,5 @@
 // Runs the built WebKit bridge bundle inside Node against the real server.wasm and Cerbos Hub.
-// Usage: npm run build && RULE_ID=<public rule id> npm test
+// Usage: npm run build && CERBOS_RULE_ID=<public rule id> npm test
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,7 +8,8 @@ import vm from "node:vm";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(here, "..", "..", "CerbosEmbeddedPDP", "Sources", "CerbosEmbeddedPDP", "Resources", "web");
-const ruleId = process.env.RULE_ID ?? "AVGB9RP6HFBL";
+// The default is a public (unauthenticated) demo rule in the Cerbos Hub demo organisation.
+const ruleId = process.env.CERBOS_RULE_ID ?? "AVGB9RP6HFBL";
 
 // --- Fake WebKit host -------------------------------------------------------------------------
 const events = [];
@@ -19,6 +20,8 @@ let hubMode = "online";
 // Whether server.wasm can be fetched; counts how often the page asked for it.
 let wasmAvailable = true;
 let wasmFetches = 0;
+// Number of GetBundle requests currently parked in "hang" mode.
+let hangingRequests = 0;
 
 globalThis.fetch = async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -35,8 +38,12 @@ globalThis.fetch = async (input, init) => {
         throw new TypeError("Simulated offline: Load failed");
       case "hang":
         // Stalled connection: only the caller's abort signal can end this.
+        hangingRequests++;
         return new Promise((_, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal.reason ?? new Error("aborted")));
+          init?.signal?.addEventListener("abort", () => {
+            hangingRequests--;
+            reject(init.signal.reason ?? new Error("aborted"));
+          });
         });
       case "forbidden":
         return new Response(JSON.stringify({ code: "permission_denied", message: "rule disabled" }), { status: 403, headers: { "content-type": "application/json" } });
@@ -154,9 +161,14 @@ const offlineResponse = await invoke("checkResources", request);
 assert.deepEqual(offlineResponse.results.map((r) => r.actions), response.results.map((r) => r.actions));
 
 // --- 3. Offline cold start without a cache fails cleanly --------------------------------------
-await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0 }));
+await assert.rejects(invoke("init", { ruleId, updateIntervalSeconds: 0 }), (error) => {
+  // An unreachable Hub is a policy-source problem, not a bridge bug.
+  assert.equal(error.serialized.kind, "policySource", `expected a policySource error, got ${JSON.stringify(error.serialized)}`);
+  return true;
+});
 const status = await invoke("status");
 assert.equal(status.status, "failed");
+assert.equal(status.error?.kind, "policySource");
 assert.ok(status.error?.message);
 
 // --- 4. A stalled connection is aborted and the cache is replayed -------------------------------
@@ -196,6 +208,29 @@ const [superseded, winner] = await Promise.allSettled([
 assert.equal(superseded.status, "rejected");
 assert.equal(winner.status, "fulfilled");
 assert.equal(winner.value.status, "ready");
+assert.equal((await invoke("status")).status, "ready");
+assert.equal((await invoke("checkResources", request)).results.length, 2);
+
+// --- 8b. A superseded init must not consume its successor's offline fallback -------------------
+// Init A stalls on its first download. Init B (another rule, offline, with a cached bundle) takes
+// over; stopping A's loader aborts A's request. A's abort must neither replay B's cache nor mark
+// the initial load as done, otherwise B's own offline fallback is gone and B fails.
+hubMode = "hang";
+const stalledInit = invoke("init", { ruleId: "AVGB9RP6HFBM", updateIntervalSeconds: 0, initialLoadTimeoutSeconds: 30 });
+while (hangingRequests === 0) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+hubMode = "offline";
+const eventsBefore = events.length;
+const [abandoned, takeover] = await Promise.allSettled([stalledInit, invoke("init", { ruleId, updateIntervalSeconds: 0, cachedBundle })]);
+assert.equal(abandoned.status, "rejected");
+assert.equal(takeover.status, "fulfilled", `takeover init failed: ${takeover.reason}`);
+assert.equal(takeover.value.status, "ready");
+assert.equal(takeover.value.bundle.source, "cache");
+assert.equal(takeover.value.bundle.bundleId, init.bundle.bundleId);
+const takeoverBundles = events.slice(eventsBefore).filter((event) => event.type === "bundles" && event.active);
+assert.equal(takeoverBundles.length, 1, `expected exactly one active-bundle event from the takeover, got ${JSON.stringify(takeoverBundles)}`);
+assert.equal(takeoverBundles[0].active.source, "cache");
 assert.equal((await invoke("status")).status, "ready");
 assert.equal((await invoke("checkResources", request)).results.length, 2);
 

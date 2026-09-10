@@ -1,6 +1,7 @@
 # Cerbos embedded PDP on iOS
 
 [![CI](https://github.com/cerbos-gtm/cerbos-epdp-ios/actions/workflows/ci.yml/badge.svg)](https://github.com/cerbos-gtm/cerbos-epdp-ios/actions/workflows/ci.yml)
+(the badge renders only for repository members while the repository is private)
 
 A SwiftUI demo that runs a [Cerbos](https://www.cerbos.dev) embedded policy decision point
 (ePDP) on the device: policies are downloaded from Cerbos Hub, evaluated locally by the Cerbos
@@ -14,7 +15,7 @@ CerbosBridge/        Node project that builds the JavaScript bridge and stages t
 
 ## How it works
 
-The current Cerbos ePDP has two parts (see the
+The Cerbos ePDP has two parts (see the
 [Hub docs](https://docs.cerbos.dev/cerbos-hub/deployments-epdp-rules)):
 
 - `@cerbos/embedded-server` ships `server.wasm`, the policy evaluation engine (Go compiled to
@@ -22,10 +23,10 @@ The current Cerbos ePDP has two parts (see the
 - `@cerbos/embedded-client` downloads a policy bundle for an *ePDP rule* from Cerbos Hub, loads it
   into the engine, and polls Hub for updates.
 
-The engine is built for a JavaScript host (`GOOS=js`), so on iOS it runs inside a hidden `WKWebView`
-where WebKit gives WebAssembly a JIT. There is no JavaScriptCore-only route: `JSContext` has no
-WebAssembly, and running a 20 MB Go runtime in a native interpreter would take seconds to start.
-The web view is an implementation detail; the app only ever talks to `CerbosEmbeddedPDP`.
+The engine is built for a JavaScript host (`GOOS=js`), so on iOS it runs inside a hidden
+`WKWebView`, where WebKit gives WebAssembly a JIT. There is no JavaScriptCore-only route:
+`JSContext` does not expose WebAssembly. The web view is an implementation detail; the app only
+ever talks to `CerbosEmbeddedPDP`.
 
 ```
 SwiftUI ─▶ CerbosEmbeddedPDP (@Observable, @MainActor)
@@ -38,7 +39,7 @@ SwiftUI ─▶ CerbosEmbeddedPDP (@Observable, @MainActor)
                         └─ Cerbos Hub: BundleService/GetBundle (rule ID, optional credentials)
 ```
 
-### What the wrapper adds on top of the SDK
+### Wrapper responsibilities
 
 - **No CDN, no network for the runtime.** The bridge script and `server.wasm` are app resources,
   served to the page by a `WKURLSchemeHandler` with the right MIME type. The WASM is memory-mapped
@@ -50,8 +51,9 @@ SwiftUI ─▶ CerbosEmbeddedPDP (@Observable, @MainActor)
 - **Typed, structured bridge.** Requests are `Codable` types mirroring `@cerbos/core`; results,
   gRPC status codes and validation errors come back as `CerbosError` / `BridgeError`. Nothing is
   string-interpolated into JavaScript.
-- **Lifecycle handling.** Idempotent `start()`, readiness with timeout, automatic rebuild when WebKit
-  discards the content process in the background, `stop()`/`restart()` for credential changes.
+- **Lifecycle handling.** Idempotent `start()`, readiness with timeout, automatic rebuild when
+  WebKit discards the content process in the background, `reconfigure(_:)` for rule or credential
+  changes without recompiling the engine, and `stop()`/`restart()` for a full rebuild.
 - **JWT verification stays native.** Pass `AuxData.jwt` and supply `Configuration.jwtDecoder`; the
   bridge asks the app to verify and decode the token, the engine only sees the claims.
 - **Diagnostics.** Bridge logs, bundle metadata (ID, rule revision, source) and update outcomes are
@@ -83,15 +85,17 @@ response.isAllowed(kind: "resource", id: "1", action: "update")
 `checkResource`, `isAllowed` and `planResources` are also available. Batch the resources a screen
 needs into one `checkResources` call: each call is one round trip to the web content process.
 
-Observable state: `status`, `bundle`, `server`, `lastPolicyUpdate`, `logs`.
+Observable state: `status`, `isReady`, `configuration`, `bundle`, `pendingBundle`, `server`,
+`lastPolicyUpdate`, `logs`.
 
 ## Building
 
-Requirements: Xcode 26 (Swift 6.2), iOS 26 SDK. Node is only needed to upgrade the Cerbos SDK.
+Requirements: Xcode 26 (Swift 6.2) and the iOS 26 SDK for the demo app. The package itself supports
+iOS 18 and macOS 15. Node is only needed to upgrade the Cerbos SDK.
 
-Open `epdpdemo.xcodeproj` and run. The demo starts with a public demo rule; enter your own rule ID
-(and client credentials for authenticated rules) and tap **Restart**. The secret is stored in the
-Keychain, never in source.
+Open `epdpdemo.xcodeproj` and run. The demo starts with a public demo rule. To use your own rule,
+open **Cerbos Hub settings** from the toolbar, enter the rule ID (and client credentials for
+authenticated rules) and tap **Apply**. The secret is stored in the Keychain, never in source.
 
 ### Upgrading the Cerbos SDK / engine
 
@@ -103,46 +107,52 @@ npm test                          # runs the built bridge in Node against the re
 ```
 
 `build.mjs` verifies `server.wasm` against the checksum published in `@cerbos/embedded-server`
-and writes `manifest.json` with the versions in use. The generated assets are committed so the
-Xcode project builds without Node.
+and writes `manifest.json` with the versions in use. The generated assets are committed, and marked
+as generated in `.gitattributes`, so the Xcode project builds without Node.
 
 ### Tests
 
-- `cd CerbosEmbeddedPDP && swift test` — request/response coding, bridge events, bundle cache
+- `cd CerbosEmbeddedPDP && swift test`: request/response coding, bridge events, bundle cache
   (runs on macOS and Linux).
-- `cd CerbosBridge && npm test` — end-to-end bridge smoke test: online init, checks, plan, JWT
+- `cd CerbosBridge && npm test`: end-to-end bridge smoke test: online init, checks, plan, JWT
   callback, structured errors, offline start from the cached bundle.
-- Integration test (`epdpdemoTests/EmbeddedPDPIntegrationTests.swift`, and a macOS copy in the
-  package tests): starts a real `CerbosEmbeddedPDP` against the public demo rule inside the app on
+- Integration test (`epdpdemoTests/EmbeddedPDPIntegrationTests.swift`, also run by the package
+  tests on macOS): starts a real `CerbosEmbeddedPDP` against the public demo rule inside the app on
   the simulator, runs checks and a plan, verifies the bundle was cached, then restarts with an
-  unreachable Hub URL and asserts it comes up from the cache. Needs network access; set
-  `CERBOS_RULE_ID` to use another public rule.
+  unreachable Hub URL and asserts it comes up from the cache. Needs network access. Set
+  `CERBOS_RULE_ID` to use another public rule with `swift test` and `npm test`; the Xcode-hosted
+  test reads `TEST_RUNNER_CERBOS_RULE_ID`, because `xcodebuild` forwards only variables with that
+  prefix to the test host.
 - The Xcode test target also covers the demo's request builder.
 - CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request: the bridge
-  on Node 22 (and checks the committed assets match the build), the package on Linux and macOS,
-  and the app on the iOS simulator with Xcode 26. Dependabot keeps the npm packages and workflow
-  actions current. Formatting is enforced with `swift format` (`.swift-format`).
+  on Node 24 (and checks that the committed assets, including `manifest.json`, match the build),
+  the package on Linux and macOS, and the app on the iOS simulator with Xcode 26. Dependabot keeps
+  the npm packages and workflow actions current. Formatting is enforced with `swift format`
+  (`.swift-format`).
 
-## Behaviour worth knowing
+## Runtime behaviour
 
 - **Offline cache policy.** The last bundle is replayed only when the first download fails for a
   reason that is not the client's fault: no network, DNS failure, a stalled connection (aborted
-  after `initialLoadTimeout`, 20 s by default), a Hub 5xx/429, or a captive portal answering with
-  HTML. A 4xx (disabled rule, unknown rule, bad or revoked credentials) fails `start()` instead, so
-  revoking access takes effect on the next cold start.
+  after `initialLoadTimeout`, 20 s by default), a Hub 5xx/408/429, or a captive portal answering
+  with HTML. A 4xx (disabled rule, unknown rule, bad or revoked credentials) fails `start()`
+  instead, so revoking access takes effect on the next cold start.
 - **Timeouts.** `start()` fails with `CerbosError.timeout` after `startTimeout` (120 s), and each
-  check after `requestTimeout` (30 s). Evaluation takes milliseconds; these only fire on a stuck
-  engine or a hung network.
+  check after `requestTimeout` (30 s). `initialLoadTimeout` is clamped to a minimum of 1 s.
+  Evaluation takes milliseconds; these only fire on a stuck engine or a hung network.
 - **Deferred activation.** With `activateOnLoad = false`, `bundle` stays on the active bundle and a
   downloaded update appears in `pendingBundle` until `activatePendingBundle()`.
 - **Web view hardening.** The page opts out of Lockdown Mode for its own trusted content (Lockdown
   removes WebAssembly), runs under a Content Security Policy that allows only the bundled script,
-  WebAssembly compilation and HTTPS connections, and compiles the engine module once per page so
-  `reconfigure(_:)` and policy reloads never recompile it. A lost web content process is rebuilt
-  automatically (at most `maximumRestarts` per `restartWindow`), a check interrupted by that
-  loss is retried once, and `checkHealth()` on returning to the foreground rebuilds a dead page
-  before the first real check. Failures are classified as `engine` (WebAssembly missing or
-  broken), `policySource` (Hub rejected the request) or `initialisation`.
+  WebAssembly compilation, and connections over HTTPS or to `localhost`, and compiles the engine
+  module once per page so `reconfigure(_:)` and policy reloads never recompile it.
+- **Content process recovery.** A lost web content process is rebuilt automatically (at most
+  `maximumRestarts` per `restartWindow`; the budget resets when the app calls `start()`,
+  `restart()` or `reconfigure(_:)`), and a check interrupted by that loss is retried once.
+  Calling `checkHealth()` when the app returns to the foreground (as the demo does) rebuilds a
+  dead page before the first real check. Failures are classified as `engine` (WebAssembly
+  missing or broken), `policySource` (Hub rejected the request,
+  or is unreachable and there is no cached bundle) or `initialisation`.
 - **Update cadence.** The SDK's loader polls on its interval and has no "check now"; after a long
   time in the background the next check happens within one interval. `restart()` forces a fresh
   download at the cost of recompiling the WebAssembly module.
@@ -150,12 +160,15 @@ Xcode project builds without Node.
   Share one instance (for example from your app model) rather than creating one per screen.
 - **Cache keys.** The offline cache is keyed by Hub URL (trailing slashes ignored), rule ID and
   scopes; changing any of them starts from an empty cache.
-- **Plain-HTTP Hub URLs** (self-hosted, non-TLS) are blocked by App Transport Security unless the
-  app adds an exception.
+- **Hub URL scheme.** `hubBaseURL` must use `https`; `http` is accepted only for `localhost` and
+  `127.0.0.1`. Other values are rejected when the configuration is applied, before any network
+  access. The page's Content Security Policy enforces the same restriction, and App Transport
+  Security blocks plain HTTP unless the app adds an exception.
 - **CI depends on the public demo rule** and on Hub being reachable from the runners.
 
 ## Security notes
 
 - Client credentials in a shipped app can be extracted; prefer public rules with policy filtering
-  (resources, actions, roles, scopes) or a backend-for-frontend, as the Hub docs recommend.
+  (resources, actions, roles, scopes) or a backend-for-frontend, as the
+  [Hub docs recommend](https://docs.cerbos.dev/cerbos-hub/deployments-epdp-rules#_browser_applications).
 - The page never navigates away from its own scheme and has a non-persistent website data store.

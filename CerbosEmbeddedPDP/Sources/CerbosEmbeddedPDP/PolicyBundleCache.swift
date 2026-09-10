@@ -14,17 +14,25 @@ public actor PolicyBundleCache {
 
     public let directory: URL
 
-    /// - Parameter directory: Where to store bundles. Defaults to `Application Support/CerbosEmbeddedPDP/policy-bundles`.
+    /// - Parameter directory: Where to store bundles. Defaults to ``defaultDirectory()``.
     public init(directory: URL? = nil) {
         self.directory = directory ?? Self.defaultDirectory()
     }
 
+    /// `Application Support/CerbosEmbeddedPDP/policy-bundles`. On macOS, where Application Support
+    /// is shared between non-sandboxed apps, the bundle identifier is added so one app's
+    /// ``removeAll()`` cannot discard another app's cache.
     public static func defaultDirectory() -> URL {
         let base =
             FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("CerbosEmbeddedPDP", isDirectory: true)
-            .appendingPathComponent("policy-bundles", isDirectory: true)
+        var directory = base.appendingPathComponent("CerbosEmbeddedPDP", isDirectory: true)
+        #if os(macOS)
+        if let bundleIdentifier = Bundle.main.bundleIdentifier {
+            directory.appendPathComponent(bundleIdentifier, isDirectory: true)
+        }
+        #endif
+        return directory.appendingPathComponent("policy-bundles", isDirectory: true)
     }
 
     /// Returns the cached response body for the key, or `nil` if there is none or it is corrupt.

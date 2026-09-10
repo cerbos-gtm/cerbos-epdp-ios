@@ -27,17 +27,27 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func set(_ value: String?, for key: String) {
+    /// Replaces the stored value, or removes it when `value` is nil or empty. Returns the Keychain
+    /// status so callers can tell the user when the secret was not persisted.
+    @discardableResult
+    static func set(_ value: String?, for key: String) -> OSStatus {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: key,
         ]
-        SecItemDelete(query as CFDictionary)
-        guard let value, !value.isEmpty else { return }
+        let deleteStatus = SecItemDelete(query as CFDictionary)
+        guard let value, !value.isEmpty else {
+            return deleteStatus == errSecItemNotFound ? errSecSuccess : deleteStatus
+        }
         var attributes = query
         attributes[kSecValueData] = Data(value.utf8)
         attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(attributes as CFDictionary, nil)
+        return SecItemAdd(attributes as CFDictionary, nil)
+    }
+
+    /// Human-readable description of a Keychain status, for error messages.
+    static func message(for status: OSStatus) -> String {
+        (SecCopyErrorMessageString(status, nil) as String?) ?? "OSStatus \(status)"
     }
 }

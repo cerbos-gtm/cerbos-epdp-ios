@@ -1,5 +1,4 @@
 {
-  "builtAt": "2026-09-09T15:52:28.635Z",
   "versions": {
     "@cerbos/embedded-client": "0.8.0",
     "@cerbos/embedded-server": "0.7.1",
@@ -17,6 +16,6 @@
     "sha256": "25eb18c22b6700d927bcb9dae5fd91c830e917f5d3005d1cb7e161c6af138a13"
   },
   "bridge": {
-    "byteCount": 653640
+    "byteCount": 653811
   }
 }

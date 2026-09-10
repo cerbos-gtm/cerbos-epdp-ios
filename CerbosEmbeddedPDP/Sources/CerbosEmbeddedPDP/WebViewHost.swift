@@ -308,17 +308,12 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
     private static let chunkSize = 4 << 20
 
     private let directory: URL
-    private var activeTasks = Set<ObjectIdentifier>()
 
     init(directory: URL) {
         self.directory = directory
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
-        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
-        activeTasks.insert(taskID)
-        defer { activeTasks.remove(taskID) }
-
         guard let url = urlSchemeTask.request.url else {
             urlSchemeTask.didFailWithError(URLError(.badURL))
             return
@@ -347,20 +342,19 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         )!
         urlSchemeTask.didReceive(response)
 
-        // Hand the (memory-mapped) file over in chunks to bound the size of each IPC message.
+        // Hand the (memory-mapped) file over in chunks to bound the size of each IPC message. The
+        // loop never suspends, so the task cannot be stopped part-way and needs no cancellation check.
         var offset = 0
         while offset < data.count {
-            guard activeTasks.contains(taskID) else { return }
             let end = min(offset + Self.chunkSize, data.count)
             urlSchemeTask.didReceive(data.subdata(in: offset..<end))
             offset = end
         }
-        guard activeTasks.contains(taskID) else { return }
         urlSchemeTask.didFinish()
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
-        activeTasks.remove(ObjectIdentifier(urlSchemeTask as AnyObject))
+        // Responses are delivered synchronously in `start`, so there is never an in-progress task to stop.
     }
 }
 #endif

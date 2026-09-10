@@ -39,6 +39,12 @@ export class HubBundleCache {
   private cachedContentType = "application/proto";
   private loadedOnce = false;
   private initialLoadTimeoutMs = 20_000;
+  /**
+   * Incremented by every `configure()` call. A GetBundle request started under an earlier session
+   * belongs to a loader that has since been stopped, so its outcome must neither be observed nor
+   * trigger a cache replay: doing so would consume the fallback that the current session needs.
+   */
+  private session = 0;
   private _current: BundleInfo | undefined;
 
   public onBundle?: (info: BundleInfo) => void;
@@ -51,6 +57,7 @@ export class HubBundleCache {
 
   /** Prepares the cache for a (re)initialised client. */
   public configure(key: string, cachedBody: string | undefined, initialLoadTimeoutMs = 20_000): void {
+    this.session++;
     this.key = key;
     this.initialLoadTimeoutMs = initialLoadTimeoutMs;
     this.loadedOnce = false;
@@ -72,17 +79,28 @@ export class HubBundleCache {
         return originalFetch(input, init);
       }
 
+      const session = this.session;
       const initialLoad = !this.loadedOnce;
       let response: Response;
       try {
         response = await originalFetch(input, initialLoad ? this.withInitialLoadTimeout(init) : init);
       } catch (error) {
+        if (session !== this.session) {
+          // A newer init reconfigured the cache while this request was in flight (typically the
+          // abort caused by stopping the old loader). It must not consume the new session's fallback.
+          throw error;
+        }
         // Offline, DNS failure, connection refused, or the initial-load timeout.
         const fallback = this.fallback(`network error: ${String(error)}`);
         if (fallback) {
           return fallback;
         }
         throw error;
+      }
+
+      if (session !== this.session) {
+        // Superseded while in flight: hand the response to the (already stopped) loader untouched.
+        return response;
       }
 
       if (!response.ok) {

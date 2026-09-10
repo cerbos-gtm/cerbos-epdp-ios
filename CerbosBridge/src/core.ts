@@ -29,8 +29,8 @@ export interface SerializedError {
   message: string;
   /**
    * Coarse classification for initialisation failures: `engine` (WebAssembly unavailable or the
-   * module failed to load), `policySource` (Cerbos Hub rejected or could not serve the bundle),
-   * or `bridge` (anything else).
+   * module failed to load), `policySource` (Cerbos Hub rejected the request, could not serve the
+   * bundle, or was unreachable with no cached bundle to fall back on), or `bridge` (anything else).
    */
   kind?: ErrorKind;
   /** gRPC status code for `NotOK` errors. */
@@ -420,7 +420,12 @@ export function classifyInitError(error: unknown): ErrorKind {
   const notOK = chain.find((item): item is NotOK => item instanceof NotOK);
   if (notOK) {
     const root = chain[chain.length - 1];
-    const rootIsTransport = root instanceof NotOK || (root instanceof Error && root.name === "ConnectError");
+    // Transport roots: a Connect error carrying a status, an aborted or timed-out request, or the
+    // TypeError that fetch throws when the network is unreachable (WebKit: "Load failed").
+    const rootIsTransport =
+      root instanceof NotOK ||
+      root instanceof TypeError ||
+      (root instanceof Error && (root.name === "ConnectError" || root.name === "AbortError" || root.name === "TimeoutError"));
     return notOK.code === Status.UNKNOWN && !rootIsTransport ? "bridge" : "policySource";
   }
   return "bridge";
