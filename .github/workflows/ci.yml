@@ -87,7 +87,16 @@ jobs:
             -destination "id=$DEVICE" \
             -only-testing:epdpdemoTests \
             -only-testing:epdpdemoUITests \
+            -parallel-testing-enabled NO \
+            -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO
+      - name: Upload test results (on failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xcresult
+          path: TestResults.xcresult
+          if-no-files-found: ignore
       - name: Crash reports and simulator log (on failure)
         if: failure()
         run: |

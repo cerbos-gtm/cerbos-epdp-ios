@@ -23,6 +23,7 @@ final class epdpdemoUITests: XCTestCase {
         XCTAssertTrue(statusTitle.waitForExistence(timeout: 10), "The status banner should be present after launch")
 
         let ready = expectation(for: NSPredicate(format: "label == %@", "Ready"), evaluatedWith: statusTitle)
-        wait(for: [ready], timeout: 120)
+        // The app's startTimeout is 120 s; allow for that plus a slow, shared CI simulator.
+        wait(for: [ready], timeout: 180)
     }
 }

@@ -58,7 +58,8 @@ public final class CerbosEmbeddedPDP {
         public var updateInterval: Duration? = .seconds(60)
         /// Whether downloaded updates replace the active bundle immediately (otherwise call ``activatePendingBundle()``).
         public var activateOnLoad = true
-        /// Upper bound for `start()`: WebAssembly compilation plus the first bundle download.
+        /// Upper bound for each phase of `start()`: loading the bridge page, then WebAssembly
+        /// compilation plus the first bundle download.
         public var startTimeout: Duration = .seconds(120)
         /// Upper bound for a single check or plan. Evaluation takes milliseconds; this only fires on a stuck engine.
         public var requestTimeout: Duration = .seconds(30)
@@ -345,7 +346,7 @@ public final class CerbosEmbeddedPDP {
         }
         status = .loading
         do {
-            try await host.start()
+            try await host.start(timeout: configuration.startTimeout)
             guard generation == startGeneration else { return }
 
             var cachedBundle: BridgeInitParams.CachedBundle?
