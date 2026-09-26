@@ -1,9 +1,8 @@
 import CerbosEmbeddedPDP
 import Foundation
 
-/// The access check exercised by the demo UI. It targets the sample policy used by the Cerbos
-/// GTM demos: a `resource` kind where `ADMIN` can do anything, `USER` can `read`/`create`, and
-/// `USER` can `update`/`delete`/`publish` only resources they own (`R.attr.ownerId == P.id`).
+/// The demo's access check, against the sample `resource` policy: `ADMIN` can do anything; `USER`
+/// can `read`/`create`, and `update`/`delete`/`publish` only resources they own.
 struct DemoScenario: Equatable {
     static let roles = ["USER", "ADMIN"]
     static let actions = ["read", "create", "update", "delete", "publish"]

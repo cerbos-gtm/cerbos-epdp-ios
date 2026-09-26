@@ -1,8 +1,7 @@
 import Foundation
 
-// Request and response types mirror the `@cerbos/core` client API, which is what the bridge
-// forwards to `@cerbos/embedded-client`. Field names are chosen to match the JSON shapes exactly
-// (with `attr` exposed as `attributes` in Swift).
+// Request and response types mirror the `@cerbos/core` JSON shapes the bridge forwards to
+// `@cerbos/embedded-client` (`attr` is exposed as `attributes` in Swift).
 
 // MARK: - Requests
 
@@ -59,8 +58,7 @@ public struct ResourceCheck: Sendable, Hashable, Codable {
     }
 }
 
-/// A JWT passed as auxiliary data. It is verified and decoded by the `jwtDecoder` you configure;
-/// the embedded PDP never sees the raw token.
+/// A JWT passed as auxiliary data. Your `jwtDecoder` verifies it; the engine only sees the claims.
 public struct JWT: Sendable, Hashable, Codable {
     public var token: String
     public var keySetId: String?
@@ -190,8 +188,7 @@ public enum Effect: String, Sendable, Codable {
     case allow = "EFFECT_ALLOW"
     case deny = "EFFECT_DENY"
 
-    /// Any effect this version does not know is treated as a denial (fail closed) rather than
-    /// failing the whole response, so the other resources in a batch keep their decisions.
+    /// Unknown effects decode as a denial (fail closed) so the rest of a batch keeps its decisions.
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         if let known = Effect(rawValue: raw) {

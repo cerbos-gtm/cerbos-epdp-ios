@@ -116,6 +116,7 @@ assert.equal(init.bundle.source, "network");
 const cacheEvent = events.find((event) => event.type === "bundleCache");
 assert.ok(cacheEvent, "bundleCache event not emitted");
 assert.equal(cacheEvent.bundleId, init.bundle.bundleId);
+assert.ok(!events.some((event) => event.type === "decision"), "the init warm-up check leaked a decision event");
 
 const response = await invoke("checkResources", request);
 assert.equal(response.results.length, 2);
@@ -212,9 +213,8 @@ assert.equal((await invoke("status")).status, "ready");
 assert.equal((await invoke("checkResources", request)).results.length, 2);
 
 // --- 8b. A superseded init must not consume its successor's offline fallback -------------------
-// Init A stalls on its first download. Init B (another rule, offline, with a cached bundle) takes
-// over; stopping A's loader aborts A's request. A's abort must neither replay B's cache nor mark
-// the initial load as done, otherwise B's own offline fallback is gone and B fails.
+// Init A stalls; init B (offline, cached) takes over and stopping A aborts A's request. That abort
+// must not use up B's cache fallback, or B fails.
 hubMode = "hang";
 const stalledInit = invoke("init", { ruleId: "AVGB9RP6HFBM", updateIntervalSeconds: 0, initialLoadTimeoutSeconds: 30 });
 while (hangingRequests === 0) {

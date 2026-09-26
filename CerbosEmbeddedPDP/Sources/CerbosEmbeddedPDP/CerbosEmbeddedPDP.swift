@@ -4,9 +4,8 @@ import Observation
 
 /// An embedded Cerbos policy decision point for iOS and macOS.
 ///
-/// Runs the official `@cerbos/embedded-client` and the `@cerbos/embedded-server` WebAssembly
-/// module inside a hidden web view, downloads policy bundles from Cerbos Hub, keeps them updated
-/// in the background, and caches the last bundle on disk so the app can start offline.
+/// Runs `@cerbos/embedded-client` and the Cerbos WebAssembly engine in a hidden web view, with
+/// policy bundles from Cerbos Hub updated in the background and cached on disk for offline starts.
 ///
 /// ```swift
 /// let pdp = CerbosEmbeddedPDP(configuration: .init(ruleId: "AVGB9RP6HFBL"))
@@ -48,9 +47,8 @@ public final class CerbosEmbeddedPDP {
         public var ruleId: String
         /// Scopes to request when the rule requires (or allows) scoped bundles.
         public var scopes: [String] = []
-        /// Cerbos Hub API base URL. Defaults to `https://api.cerbos.cloud`. Must use `https`; plain
-        /// `http` is only accepted for `localhost`, because the bridge page's Content Security Policy
-        /// blocks every other insecure origin.
+        /// Cerbos Hub API base URL, defaulting to `https://api.cerbos.cloud`. Must be `https` (plain
+        /// `http` only for localhost), as the bridge page's Content Security Policy blocks the rest.
         public var hubBaseURL: URL? = nil
         /// Client credentials for rules that require authentication. Keep them out of source control.
         public var credentials: HubCredentials? = nil
@@ -58,18 +56,17 @@ public final class CerbosEmbeddedPDP {
         public var updateInterval: Duration? = .seconds(60)
         /// Whether downloaded updates replace the active bundle immediately (otherwise call ``activatePendingBundle()``).
         public var activateOnLoad = true
-        /// Upper bound for each phase of `start()`: loading the bridge page, then WebAssembly
-        /// compilation plus the first bundle download.
+        /// Upper bound for each phase of `start()`: loading the page, then compiling the engine and
+        /// downloading the first bundle.
         public var startTimeout: Duration = .seconds(120)
         /// Upper bound for a single check or plan. Evaluation takes milliseconds; this only fires on a stuck engine.
         public var requestTimeout: Duration = .seconds(30)
-        /// The first bundle download is aborted after this long so a stalled connection falls back to the
-        /// offline cache. Values under one second are raised to one second.
+        /// Aborts a stalled first bundle download so the offline cache can be used. Minimum 1 second.
         public var initialLoadTimeout: Duration = .seconds(20)
         /// When a check fails because the web content process died, rebuild it and retry the check once.
         public var retryAfterRecovery = true
-        /// How many automatic rebuilds are allowed within `restartWindow` before giving up until
-        /// ``start()``, ``restart()`` or ``reconfigure(_:)`` is called.
+        /// Automatic rebuilds allowed per `restartWindow`. Once exhausted, recovery waits for
+        /// ``start()``, ``restart()`` or ``reconfigure(_:)``.
         public var maximumRestarts = 3
         public var restartWindow: Duration = .seconds(600)
 
@@ -156,9 +153,8 @@ public final class CerbosEmbeddedPDP {
     @ObservationIgnored private let host: CerbosWebViewHost
     @ObservationIgnored private let cache: PolicyBundleCache
     @ObservationIgnored private let resourcesError: CerbosError?
-    /// Incremented whenever the web view or the configuration an attempt was started under is no
-    /// longer valid (`stop()`, `reconfigure(_:)`, a content process termination). A start attempt
-    /// that began under an older generation abandons itself instead of publishing its outcome.
+    /// Bumped by `stop()`, `reconfigure(_:)` and content process termination. A start attempt from an
+    /// older generation abandons itself instead of publishing its outcome.
     @ObservationIgnored private var startGeneration = 0
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var startTaskGeneration = 0
@@ -187,9 +183,8 @@ public final class CerbosEmbeddedPDP {
         host.onProcessTerminated = { [weak self] in self?.handleProcessTermination() }
     }
 
-    /// Loads the WebAssembly module and the policy bundle. Safe to call repeatedly; concurrent
-    /// callers share one attempt. Call again after a failure to retry; this also resets the
-    /// automatic restart budget (`Configuration.maximumRestarts`).
+    /// Loads the engine and the policy bundle. Idempotent; concurrent callers share one attempt.
+    /// Call again after a failure to retry, which also resets the automatic restart budget.
     public func start() async {
         restartTimes.removeAll()
         await startIfNeeded()
@@ -218,9 +213,8 @@ public final class CerbosEmbeddedPDP {
         await task.value
     }
 
-    /// Applies a new configuration (rule, scopes, credentials, options) without rebuilding the web view.
-    /// The already-compiled engine module is reused, so this is much cheaper than ``restart()``.
-    /// A start that is still in progress is superseded, so the new configuration is the one that ends up running.
+    /// Applies a new configuration, reusing the compiled engine (much cheaper than ``restart()``).
+    /// Supersedes any start still in progress.
     public func reconfigure(_ configuration: Configuration) async {
         self.configuration = configuration
         startGeneration += 1
@@ -234,9 +228,8 @@ public final class CerbosEmbeddedPDP {
         await start()
     }
 
-    /// Verifies the web content process is still answering. Call it when the app returns to the
-    /// foreground: WebKit may have discarded the process while the app was suspended, and this
-    /// rebuilds it before the first real check instead of failing that check.
+    /// Checks the web content process is still answering and rebuilds it if not. Call it when the app
+    /// returns to the foreground, since WebKit may discard the process while the app is suspended.
     /// - Returns: `true` when the PDP is ready after the check.
     @discardableResult
     public func checkHealth() async -> Bool {
@@ -333,8 +326,7 @@ public final class CerbosEmbeddedPDP {
         }
     }
 
-    /// One start attempt. `generation` is the value of `startGeneration` when the attempt was
-    /// launched; after every suspension the attempt checks it is still current before touching state.
+    /// One start attempt. After every suspension it checks `generation` is still current before touching state.
     private func performStart(generation: Int) async {
         if let resourcesError {
             status = .failed(resourcesError)
@@ -380,9 +372,8 @@ public final class CerbosEmbeddedPDP {
         }
     }
 
-    /// Hub must be reachable from the bridge page, whose Content Security Policy only allows
-    /// `https:` and loopback `http:` connections. Rejecting other URLs here gives a configuration
-    /// error instead of an opaque network failure from inside the page.
+    /// Rejects URLs the page's Content Security Policy would block (anything but `https:` and loopback
+    /// `http:`), giving a clear configuration error instead of an opaque network failure.
     nonisolated static func validate(hubBaseURL url: URL?) -> CerbosError? {
         guard let url else { return nil }
         guard let scheme = url.scheme?.lowercased(), let host = url.host(percentEncoded: false)?.lowercased(), !host.isEmpty
@@ -449,7 +440,7 @@ public final class CerbosEmbeddedPDP {
             break
 
         case .status(let bridgeStatus, let error):
-            // `init` reports its own outcome; this covers later failures (for example after a restart of the page).
+            // `init` reports its own outcome; this covers failures after it.
             if bridgeStatus == .failed, status == .ready, let error {
                 status = .failed(.initialisation(error))
             }
@@ -522,8 +513,8 @@ public final class CerbosEmbeddedPDP {
     }
 
     private func handleProcessTermination() {
-        // WebKit may reclaim the content process while the app is in the background.
-        // Rebuild it (the offline cache makes this cheap even without connectivity), within a budget.
+        // WebKit may reclaim the content process in the background. Rebuild it, within a budget;
+        // the offline cache means this works without connectivity.
         startGeneration += 1
         status = .failed(.webView(reason: "web content process terminated"))
         bundle = nil

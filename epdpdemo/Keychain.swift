@@ -1,8 +1,7 @@
 import Foundation
 import Security
 
-/// Minimal Keychain wrapper for the demo's Hub client secret. Credentials must never be
-/// hard-coded or stored in `UserDefaults`.
+/// Keychain storage for the demo's Hub client secret, which must not live in source or `UserDefaults`.
 enum Keychain {
     static let clientSecretKey = "cerbos.hub.clientSecret"
 
@@ -27,8 +26,7 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    /// Replaces the stored value, or removes it when `value` is nil or empty. Returns the Keychain
-    /// status so callers can tell the user when the secret was not persisted.
+    /// Replaces the stored value, or removes it when `value` is nil or empty. Returns the Keychain status.
     @discardableResult
     static func set(_ value: String?, for key: String) -> OSStatus {
         let query: [CFString: Any] = [

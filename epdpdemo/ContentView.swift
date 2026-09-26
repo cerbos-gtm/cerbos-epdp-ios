@@ -65,8 +65,7 @@ struct ContentView: View {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                // WebKit may discard the content process while the app is suspended; verify and
-                // rebuild on return instead of failing the first check.
+                // WebKit may discard the content process while suspended; rebuild it before the next check.
                 guard phase == .active, let pdp else { return }
                 Task { await pdp.checkHealth() }
             }
@@ -216,8 +215,7 @@ struct ContentView: View {
         return configuration
     }
 
-    /// First start creates the single PDP instance; later applies reconfigure it in place, which
-    /// reuses the already-compiled engine instead of rebuilding the web view.
+    /// The first apply creates the single PDP instance; later ones reconfigure it, reusing the compiled engine.
     private func startPDP() async {
         lastResult = nil
         checkError = nil
@@ -257,8 +255,7 @@ struct ContentView: View {
 
 // MARK: - Hub settings
 
-/// Validates the optional Hub base URL before it reaches the PDP, so a bad value is reported in the
-/// form instead of surfacing as an opaque network failure from the web view's Content Security Policy.
+/// Validates the optional Hub base URL so a bad value is reported in the form, not as a start failure.
 enum HubURLValidation {
     private static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
 

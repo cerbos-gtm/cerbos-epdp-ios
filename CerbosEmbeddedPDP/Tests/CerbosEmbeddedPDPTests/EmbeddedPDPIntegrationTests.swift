@@ -3,13 +3,9 @@ import CerbosEmbeddedPDP
 import Foundation
 import Testing
 
-/// Exercises the whole stack (in the package test process on macOS, or inside the demo app on the
-/// simulator): the hidden web view, the URL scheme handler streaming `server.wasm` into WebKit, the
-/// JavaScript bridge, a real policy bundle from Cerbos Hub, decisions, and the offline replay of the
-/// cached bundle.
-///
-/// Requires network access to `api.cerbos.cloud`. Override the rule with `CERBOS_RULE_ID`
-/// (`TEST_RUNNER_CERBOS_RULE_ID` when running through `xcodebuild test`).
+/// End-to-end test of the real stack against Cerbos Hub, run by `swift test` on macOS and inside the
+/// demo app on the simulator. Needs network access; override the rule with `CERBOS_RULE_ID`
+/// (`TEST_RUNNER_CERBOS_RULE_ID` under `xcodebuild test`).
 @Suite("Embedded PDP integration", .serialized)
 @MainActor
 struct EmbeddedPDPIntegrationTests {
