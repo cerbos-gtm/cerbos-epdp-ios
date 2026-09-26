@@ -49,7 +49,7 @@ public actor PolicyBundleCache {
     }
 
     @discardableResult
-    public func save(key: String, body: Data, bundleId: String, ruleRevision: String) throws(CerbosError) -> Entry {
+    public func save(key: String, body: Data, bundleId: String, ruleRevision: String) throws -> Entry {
         let entry = Entry(key: key, bundleId: bundleId, ruleRevision: ruleRevision, savedAt: Date(), byteCount: body.count)
         let files = fileURLs(for: key)
         do {

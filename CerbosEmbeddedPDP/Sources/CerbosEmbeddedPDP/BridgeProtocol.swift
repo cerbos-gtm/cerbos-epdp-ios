@@ -6,25 +6,25 @@ enum BridgeStatus: String, Decodable, Sendable {
     case idle, loading, ready, failed
 }
 
-struct BridgeEnvelope<Result: Decodable>: Decodable {
+struct BridgeEnvelope<Result: Decodable & Sendable>: Decodable, Sendable {
     var ok: Bool
     var result: Result?
     var error: BridgeError?
 }
 
 /// Marker for bridge methods that return no meaningful value.
-struct BridgeIgnoredResult: Decodable {
+struct BridgeIgnoredResult: Decodable, Sendable {
     init(from decoder: any Decoder) throws {}
 }
 
-struct BridgeInitParams: Encodable {
-    struct Hub: Encodable {
+struct BridgeInitParams: Encodable, Sendable {
+    struct Hub: Encodable, Sendable {
         var baseUrl: String?
         var clientId: String?
         var clientSecret: String?
     }
 
-    struct Options: Encodable {
+    struct Options: Encodable, Sendable {
         var defaultPolicyVersion: String?
         var defaultScope: String?
         var globals: [String: JSONValue]?
@@ -36,7 +36,7 @@ struct BridgeInitParams: Encodable {
         var onValidationError: String?
     }
 
-    struct CachedBundle: Encodable {
+    struct CachedBundle: Encodable, Sendable {
         var key: String
         var body: String
     }
@@ -53,14 +53,14 @@ struct BridgeInitParams: Encodable {
     var cachedBundle: CachedBundle?
 }
 
-struct BridgeInitResult: Decodable {
+struct BridgeInitResult: Decodable, Sendable {
     var status: BridgeStatus
     var bundle: BundleInfo?
     var pending: BundleInfo?
     var server: ServerInfo
 }
 
-struct BridgeStatusResult: Decodable {
+struct BridgeStatusResult: Decodable, Sendable {
     var status: BridgeStatus
     var bundle: BundleInfo?
     var pending: BundleInfo?
@@ -138,23 +138,24 @@ enum BridgeEvent: Decodable, Sendable {
 
 /// JSON coding configured for the bridge's wire format (ISO 8601 dates with fractional seconds).
 enum BridgeJSON {
-    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    nonisolated(unsafe) private static let plainFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
+    private static let fractionalStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let plainStyle = Date.ISO8601FormatStyle()
 
     static func parseDate(_ string: String) -> Date? {
-        fractionalFormatter.date(from: string) ?? plainFormatter.date(from: string)
+        (try? fractionalStyle.parse(string)) ?? (try? plainStyle.parse(string))
     }
 
-    static func makeDecoder() -> JSONDecoder {
+    // Built once and never mutated: creating a coder costs more than coding a typical request.
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.formatted(fractionalStyle))
+        }
+        return encoder
+    }()
+
+    private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
@@ -165,20 +166,23 @@ enum BridgeJSON {
             return date
         }
         return decoder
+    }()
+
+    /// ``encode(_:)`` off the caller's actor, so large requests do not hold up the main thread.
+    @concurrent
+    static func encodeConcurrently<T: Encodable & Sendable>(_ value: T) async throws(CerbosError) -> String {
+        try encode(value)
     }
 
-    static func makeEncoder() -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(fractionalFormatter.string(from: date))
-        }
-        return encoder
+    /// Decodes a bridge envelope off the caller's actor, so large responses do not hold up the main thread.
+    @concurrent
+    static func decodeEnvelopeConcurrently<T: Decodable & Sendable>(
+        _ type: T.Type, from string: String
+    ) async throws(CerbosError)
+        -> BridgeEnvelope<T>
+    {
+        try decode(BridgeEnvelope<T>.self, from: string)
     }
-
-    // Built once and never mutated: creating a coder costs more than coding a typical request.
-    nonisolated(unsafe) private static let encoder = makeEncoder()
-    nonisolated(unsafe) private static let decoder = makeDecoder()
 
     static func encode<T: Encodable>(_ value: T) throws(CerbosError) -> String {
         do {
@@ -203,8 +207,13 @@ enum BridgeJSON {
     }
 
     /// Unwraps a bridge envelope, mapping bridge-side failures to ``CerbosError``.
-    static func unwrap<T: Decodable>(_ type: T.Type, envelopeJSON: String, failure: (BridgeError) -> CerbosError) throws(CerbosError) -> T {
-        let envelope = try decode(BridgeEnvelope<T>.self, from: envelopeJSON)
+    static func unwrap<T: Decodable & Sendable>(
+        _ type: T.Type, envelopeJSON: String, failure: (BridgeError) -> CerbosError
+    ) throws(CerbosError) -> T {
+        try unwrap(decode(BridgeEnvelope<T>.self, from: envelopeJSON), failure: failure)
+    }
+
+    static func unwrap<T>(_ envelope: BridgeEnvelope<T>, failure: (BridgeError) -> CerbosError) throws(CerbosError) -> T {
         if envelope.ok {
             guard let result = envelope.result else {
                 throw CerbosError.invalidResponse(reason: "envelope is missing its result")

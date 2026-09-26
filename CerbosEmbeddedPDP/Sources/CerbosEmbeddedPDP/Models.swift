@@ -194,7 +194,7 @@ public enum Effect: String, Sendable, Codable {
         if let known = Effect(rawValue: raw) {
             self = known
         } else {
-            CerbosLog.error("Unknown effect \(raw) in a check result; treating it as a denial")
+            CerbosLog.error("Unknown effect in a check result; treating it as a denial", detail: raw)
             self = .deny
         }
     }

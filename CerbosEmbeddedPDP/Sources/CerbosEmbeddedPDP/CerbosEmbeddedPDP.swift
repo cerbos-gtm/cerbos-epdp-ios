@@ -2,6 +2,10 @@
 import Foundation
 import Observation
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 /// An embedded Cerbos policy decision point for iOS and macOS.
 ///
 /// Runs `@cerbos/embedded-client` and the Cerbos WebAssembly engine in a hidden web view, with
@@ -63,6 +67,9 @@ public final class CerbosEmbeddedPDP {
         public var requestTimeout: Duration = .seconds(30)
         /// Aborts a stalled first bundle download so the offline cache can be used. Minimum 1 second.
         public var initialLoadTimeout: Duration = .seconds(20)
+        /// Run ``checkHealth()`` whenever the app returns to the foreground (iOS), since WebKit may discard
+        /// the web content process while the app is suspended.
+        public var checksHealthOnForeground = true
         /// When a check fails because the web content process died, rebuild it and retry the check once.
         public var retryAfterRecovery = true
         /// Automatic rebuilds allowed per `restartWindow`. Once exhausted, recovery waits for
@@ -115,7 +122,7 @@ public final class CerbosEmbeddedPDP {
     public struct LogLine: Sendable, Identifiable, Equatable {
         public let id = UUID()
         public var date: Date
-        public var level: String
+        public var level: CerbosLogLevel
         public var message: String
     }
 
@@ -161,6 +168,7 @@ public final class CerbosEmbeddedPDP {
     /// The generation under which `status` last became `.ready`.
     @ObservationIgnored private var readyGeneration: Int?
     @ObservationIgnored private var restartTimes: [Date] = []
+    @ObservationIgnored private var foregroundObserver: Task<Void, Never>?
 
     // MARK: Lifecycle
 
@@ -181,6 +189,20 @@ public final class CerbosEmbeddedPDP {
         self.host = CerbosWebViewHost(resourcesDirectory: directory)
         host.onEvent = { [weak self] event in self?.handle(event) }
         host.onProcessTerminated = { [weak self] in self?.handleProcessTermination() }
+        #if canImport(UIKit)
+        foregroundObserver = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.willEnterForegroundNotification) {
+                guard let self else { return }
+                if self.configuration.checksHealthOnForeground {
+                    await self.checkHealth()
+                }
+            }
+        }
+        #endif
+    }
+
+    deinit {
+        foregroundObserver?.cancel()
     }
 
     /// Loads the engine and the policy bundle. Idempotent; concurrent callers share one attempt.
@@ -228,8 +250,8 @@ public final class CerbosEmbeddedPDP {
         await start()
     }
 
-    /// Checks the web content process is still answering and rebuilds it if not. Call it when the app
-    /// returns to the foreground, since WebKit may discard the process while the app is suspended.
+    /// Checks the web content process is still answering and rebuilds it if not. Runs automatically
+    /// when the app returns to the foreground (see `Configuration.checksHealthOnForeground`).
     /// - Returns: `true` when the PDP is ready after the check.
     @discardableResult
     public func checkHealth() async -> Bool {
@@ -239,7 +261,7 @@ public final class CerbosEmbeddedPDP {
                 let _: BridgeStatusResult = try await host.invoke("status", timeout: .seconds(5), failure: { .initialisation($0) })
                 return true
             } catch {
-                appendLog(level: "warn", "Health check failed (\(error.localizedDescription)); rebuilding the web view")
+                appendLog(.warning, "Health check failed; rebuilding the web view", detail: error.localizedDescription)
                 stop()
                 await startIfNeeded()
                 return status == .ready
@@ -262,7 +284,7 @@ public final class CerbosEmbeddedPDP {
     }
 
     /// Activates a downloaded-but-pending bundle when `Configuration.activateOnLoad` is `false`.
-    public func activatePendingBundle() async throws(CerbosError) {
+    public func activatePendingBundle() async throws {
         let _: BridgeIgnoredResult = try await host.invoke("activate", timeout: configuration.requestTimeout, failure: { .request($0) })
     }
 
@@ -272,43 +294,50 @@ public final class CerbosEmbeddedPDP {
     }
 
     // MARK: Checks
+    //
+    // Errors thrown by these methods are always ``CerbosError``.
 
-    public func checkResources(_ request: CheckResourcesRequest) async throws(CerbosError) -> CheckResourcesResponse {
-        try await perform("checkResources", params: request)
+    public func checkResources(_ request: CheckResourcesRequest) async throws -> CheckResourcesResponse {
+        try await perform("checkResources", params: request, largeRequest: request.resources.count > 8)
     }
 
-    public func checkResource(_ request: CheckResourceRequest) async throws(CerbosError) -> CheckResult {
+    public func checkResource(_ request: CheckResourceRequest) async throws -> CheckResult {
         try await perform("checkResource", params: request)
     }
 
-    public func isAllowed(_ request: IsAllowedRequest) async throws(CerbosError) -> Bool {
+    public func isAllowed(_ request: IsAllowedRequest) async throws -> Bool {
         try await perform("isAllowed", params: request)
     }
 
     public func isAllowed(
         principal: Principal, resource: Resource, action: String, auxData: AuxData? = nil
-    ) async throws(CerbosError) -> Bool {
+    ) async throws -> Bool {
         try await isAllowed(IsAllowedRequest(principal: principal, resource: resource, action: action, auxData: auxData))
     }
 
-    public func planResources(_ request: PlanResourcesRequest) async throws(CerbosError) -> PlanResourcesResponse {
+    public func planResources(_ request: PlanResourcesRequest) async throws -> PlanResourcesResponse {
         try await perform("planResources", params: request)
     }
 
     // MARK: Internals
 
     /// Runs a bridge call, and if the web content process died underneath it, rebuilds once and retries.
-    private func perform<Result: Decodable>(_ method: String, params: some Encodable) async throws(CerbosError) -> Result {
+    private func perform<Result: Decodable & Sendable>(
+        _ method: String, params: some Encodable & Sendable, largeRequest: Bool = false
+    )
+        async throws(CerbosError) -> Result
+    {
         try ensureReady()
         do {
-            return try await host.invoke(method, params: params, timeout: configuration.requestTimeout, failure: { .request($0) })
+            return try await host.invoke(
+                method, params: params, timeout: configuration.requestTimeout, largeRequest: largeRequest, failure: { .request($0) })
         } catch {
             guard error.isWebViewFailure, configuration.retryAfterRecovery else {
                 throw error
             }
             appendLog(
-                level: "warn", "\(method) failed because the web view is gone (\(error.localizedDescription)); recovering and retrying once"
-            )
+                .warning, "Check failed because the web view is gone; recovering and retrying once",
+                detail: "\(method): \(error.localizedDescription)")
             // Rebuild even if the termination notice has not arrived yet; if it has, the host already
             // knows the bridge is gone and this joins the restart it triggered.
             if host.isBridgeReady {
@@ -316,7 +345,8 @@ public final class CerbosEmbeddedPDP {
             }
             await startIfNeeded()
             try ensureReady()
-            return try await host.invoke(method, params: params, timeout: configuration.requestTimeout, failure: { .request($0) })
+            return try await host.invoke(
+                method, params: params, timeout: configuration.requestTimeout, largeRequest: largeRequest, failure: { .request($0) })
         }
     }
 
@@ -344,7 +374,7 @@ public final class CerbosEmbeddedPDP {
             var cachedBundle: BridgeInitParams.CachedBundle?
             if configuration.offlineCache, let cached = await cache.load(key: offlineCacheKey) {
                 cachedBundle = .init(key: offlineCacheKey, body: cached.body.base64EncodedString())
-                appendLog(level: "info", "Offline cache has bundle \(cached.entry.bundleId) from \(cached.entry.savedAt)")
+                appendLog(.info, "Offline cache has a bundle", detail: "\(cached.entry.bundleId) from \(cached.entry.savedAt)")
             }
             guard generation == startGeneration else { return }
 
@@ -361,13 +391,14 @@ public final class CerbosEmbeddedPDP {
             status = .ready
             readyGeneration = generation
             CerbosLog.info(
-                "Cerbos embedded PDP ready (bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?"))")
+                "Cerbos embedded PDP ready",
+                detail: "bundle \(result.bundle?.bundleId ?? "?"), source \(result.bundle?.source.rawValue ?? "?")")
         } catch {
             guard generation == startGeneration else {
                 // Superseded by stop(), reconfigure(_:) or a restart; that attempt reports its own outcome.
                 return
             }
-            CerbosLog.error("Cerbos embedded PDP failed to start: \(error.localizedDescription)")
+            CerbosLog.error("Cerbos embedded PDP failed to start", detail: error.localizedDescription)
             status = .failed(error)
         }
     }
@@ -448,11 +479,11 @@ public final class CerbosEmbeddedPDP {
         case .bundles(let active, let pending):
             if let active, active != bundle {
                 appendLog(
-                    level: "info",
-                    "Policy bundle \(active.bundleId) (revision \(active.ruleRevision)) active, loaded from \(active.source.rawValue)")
+                    .info, "Policy bundle active",
+                    detail: "\(active.bundleId) (revision \(active.ruleRevision)), loaded from \(active.source.rawValue)")
             }
             if let pending, pending != pendingBundle {
-                appendLog(level: "info", "Policy bundle \(pending.bundleId) downloaded; call activatePendingBundle() to use it")
+                appendLog(.info, "Policy bundle downloaded; call activatePendingBundle() to use it", detail: pending.bundleId)
             }
             bundle = active
             pendingBundle = pending
@@ -464,7 +495,7 @@ public final class CerbosEmbeddedPDP {
             }
             pendingBundle = pending
             if !ok, let error {
-                appendLog(level: "warn", "Policy update failed: \(error.message)")
+                appendLog(.warning, "Policy update failed", detail: error.message)
             }
 
         case .decision(let entry):
@@ -479,20 +510,20 @@ public final class CerbosEmbeddedPDP {
             Task {
                 do {
                     try await cache.save(key: key, body: data, bundleId: bundleId, ruleRevision: ruleRevision)
-                    self.appendLog(level: "debug", "Cached policy bundle \(bundleId) (\(data.count) bytes) for offline start")
+                    self.appendLog(.debug, "Cached policy bundle for offline start", detail: "\(bundleId) (\(data.count) bytes)")
                 } catch {
-                    self.appendLog(level: "error", "Failed to cache policy bundle: \(error.localizedDescription)")
+                    self.appendLog(.error, "Failed to cache policy bundle", detail: error.localizedDescription)
                 }
             }
 
         case .log(let level, let message):
-            appendLog(level: level, message)
+            appendLog(CerbosLogLevel(bridgeLevel: level), "Bridge", detail: message)
 
         case .jwtDecode(let id, let token, let keySetId):
             decodeJWT(id: id, token: token, keySetId: keySetId)
 
         case .unknown(let type):
-            appendLog(level: "warn", "Unknown bridge event \(type)")
+            appendLog(.warning, "Unknown bridge event", detail: type)
         }
     }
 
@@ -525,26 +556,20 @@ public final class CerbosEmbeddedPDP {
         restartTimes.removeAll { $0 < windowStart }
         guard restartTimes.count < configuration.maximumRestarts else {
             appendLog(
-                level: "error",
-                "Web content process terminated \(restartTimes.count) times within \(configuration.restartWindow); "
-                    + "not restarting automatically. Call start() to retry."
-            )
+                .error, "Web content process keeps terminating; not restarting automatically. Call start() to retry.",
+                detail: "\(restartTimes.count) times within \(configuration.restartWindow)")
             return
         }
         restartTimes.append(now)
         appendLog(
-            level: "warn",
-            "Web content process terminated; restarting (\(restartTimes.count)/\(configuration.maximumRestarts) in the current window)")
+            .warning, "Web content process terminated; restarting",
+            detail: "\(restartTimes.count)/\(configuration.maximumRestarts) in the current window")
         Task { await self.startIfNeeded() }
     }
 
-    private func appendLog(level: String, _ message: String) {
-        switch level {
-        case "error": CerbosLog.error(message)
-        case "warn": CerbosLog.info("warning: \(message)")
-        default: CerbosLog.debug(message)
-        }
-        logs.append(LogLine(date: Date(), level: level, message: message))
+    private func appendLog(_ level: CerbosLogLevel, _ message: StaticString, detail: String? = nil) {
+        CerbosLog.log(level, message, detail: detail)
+        logs.append(LogLine(date: Date(), level: level, message: detail.map { "\(message): \($0)" } ?? "\(message)"))
         if logs.count > 100 {
             logs.removeFirst(logs.count - 100)
         }

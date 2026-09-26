@@ -57,8 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: swift format lint --strict --recursive Sources Tests ../epdpdemo ../epdpdemoTests ../epdpdemoUITests
-      - run: swift build
-      - run: swift test
+      - run: swift build -Xswiftc -warnings-as-errors
+      - run: swift test -Xswiftc -warnings-as-errors
 
   apple:
     name: Swift package and app (Xcode 26)
@@ -72,8 +72,9 @@ jobs:
           echo "Using $XCODE"
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-      - name: Package tests (macOS)
-        run: swift test --package-path CerbosEmbeddedPDP
+      # Thread Sanitizer covers the main-queue invariants in the web view host.
+      - name: Package tests (macOS, Thread Sanitizer)
+        run: swift test --package-path CerbosEmbeddedPDP --sanitize=thread -Xswiftc -warnings-as-errors
       - name: Build and test the app on the iOS simulator
         env:
           # xcodebuild only forwards TEST_RUNNER_-prefixed variables to the test host.

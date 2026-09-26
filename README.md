@@ -20,12 +20,29 @@ no account is needed.
 **Use the package.** Add `CerbosEmbeddedPDP/` to your app as a local package
 (**File > Add Package Dependencies… > Add Local…**):
 
+Create one instance for the app and share it through the environment:
+
 ```swift
 import CerbosEmbeddedPDP
+import SwiftUI
 
-let pdp = CerbosEmbeddedPDP(configuration: .init(ruleId: "AVGB9RP6HFBL"))
-await pdp.start()
+@main
+struct MyApp: App {
+    @State private var pdp = CerbosEmbeddedPDP(configuration: .init(ruleId: "AVGB9RP6HFBL"))
 
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(pdp)
+                .task { await pdp.start() }
+        }
+    }
+}
+```
+
+Then check access from any view with `@Environment(CerbosEmbeddedPDP.self) private var pdp`:
+
+```swift
 let document = Resource(kind: "resource", id: "1", attributes: ["ownerId": "alice"])
 let response = try await pdp.checkResources(CheckResourcesRequest(
     principal: Principal(id: "alice", roles: ["USER"]),
@@ -34,8 +51,9 @@ let response = try await pdp.checkResources(CheckResourcesRequest(
 let canUpdate = response.isAllowed(kind: "resource", id: "1", action: "update")
 ```
 
-`checkResource`, `isAllowed` and `planResources` are also available. The class is `@Observable`, so
-`status`, `bundle`, `lastPolicyUpdate` and `logs` can drive SwiftUI directly.
+`checkResource`, `isAllowed` and `planResources` are also available, and every error they throw is
+a `CerbosError`. The class is `@Observable`, so `status`, `bundle`, `lastPolicyUpdate` and `logs`
+can drive SwiftUI directly.
 
 **Use your own Hub rule.** Create an
 [ePDP rule](https://docs.cerbos.dev/cerbos-hub/deployments-epdp-rules) in your Hub deployment and
@@ -75,17 +93,24 @@ policy bundles come from the network. Requests mirror `@cerbos/core` as `Codable
   `CerbosError.timeout`.
 - **Lifecycle.** `start()` is idempotent. `reconfigure(_:)` changes rule or credentials without
   recompiling the engine; `restart()` rebuilds everything. A killed web content process is rebuilt
-  automatically and the interrupted check retried once. Call `checkHealth()` on returning to the
-  foreground so a dead page is rebuilt before the first real check.
+  automatically and the interrupted check retried once. On iOS, `checkHealth()` runs whenever the
+  app returns to the foreground (`checksHealthOnForeground`), so a page WebKit discarded in the
+  background is rebuilt before the first real check.
 - **Updates.** Hub is polled every `updateInterval` (60 s; `nil` disables). Set
   `activateOnLoad = false` to hold updates in `pendingBundle` until `activatePendingBundle()`.
-- **One instance per rule.** Each instance owns a web view and compiles the engine; share one from
-  your app model rather than creating one per screen.
+- **One instance per rule.** Each instance owns a web view and compiles the engine; share one
+  through the environment rather than creating one per screen.
 - **Latency.** A decision reaches Swift in about 0.2 ms (M-series Mac, release build); roughly
   0.13 ms of that is the web view round trip, so batch what a screen needs into one
   `checkResources` call. `start()` runs a throwaway check before reporting ready, so the first
-  real decision skips the ~20 ms JIT warm-up.
-- **Debugging.** In Debug builds the web view is inspectable from Safari's Develop menu.
+  real decision skips the ~20 ms JIT warm-up. Large requests and responses are encoded and decoded
+  off the main thread.
+- **Debugging.** In Debug builds the web view is inspectable from Safari's Develop menu. Each
+  bridge call is an os_signpost interval (subsystem `dev.cerbos.epdp`, category `Bridge`), so
+  decision latency shows up in Instruments. Unified logs keep runtime values (errors, bundle IDs)
+  private.
+- **Privacy manifest.** The package ships a `PrivacyInfo.xcprivacy`: no tracking, no collected
+  data, no required-reason APIs.
 
 ## Upgrading the Cerbos SDK
 
@@ -109,8 +134,9 @@ decision latency (excluding the native round trip); for the full round trip run
 
 Integration tests need network access and use a public demo rule; override it with
 `CERBOS_RULE_ID` (`TEST_RUNNER_CERBOS_RULE_ID` under `xcodebuild`). CI runs everything on pull
-requests and pushes to `main`, checks that committed bridge assets match a fresh build, and runs
-`swift format lint --strict`.
+requests and pushes to `main`, checks that committed bridge assets match a fresh build, treats
+Swift warnings as errors, runs the macOS package tests under Thread Sanitizer, and runs
+`swift format lint --strict`. API docs: **Product > Build Documentation** in Xcode.
 
 ## Security notes
 
