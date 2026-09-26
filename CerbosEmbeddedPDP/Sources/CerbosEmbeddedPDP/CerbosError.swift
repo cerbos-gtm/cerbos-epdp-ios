@@ -64,25 +64,25 @@ extension CerbosError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notReady:
-            return "The embedded PDP is not ready."
+            String(localized: "The embedded PDP is not ready.", bundle: .module)
         case .webView(let reason):
-            return "The embedded PDP web content process failed: \(reason)"
+            String(localized: "The embedded PDP web content process failed: \(reason)", bundle: .module)
         case .timeout(let operation):
-            return "Timed out waiting for the embedded PDP to \(operation)."
+            String(localized: "Timed out waiting for the embedded PDP to \(operation).", bundle: .module)
         case .engine(let reason):
-            return "The embedded PDP engine cannot run: \(reason)"
+            String(localized: "The embedded PDP engine cannot run: \(reason)", bundle: .module)
         case .policySource(let error):
-            return "Cerbos Hub could not provide the policy bundle: \(error.message)"
+            String(localized: "Cerbos Hub could not provide the policy bundle: \(error.message)", bundle: .module)
         case .initialisation(let error):
-            return "Failed to initialise the embedded PDP: \(error.message)"
+            String(localized: "Failed to initialise the embedded PDP: \(error.message)", bundle: .module)
         case .request(let error):
-            return error.details.map { "\(error.message) (\($0))" } ?? error.message
+            error.details.map { "\(error.message) (\($0))" } ?? error.message
         case .invalidResponse(let reason):
-            return "Invalid response from the embedded PDP bridge: \(reason)"
+            String(localized: "Invalid response from the embedded PDP bridge: \(reason)", bundle: .module)
         case .invalidRequest(let reason):
-            return "Invalid request: \(reason)"
+            String(localized: "Invalid request: \(reason)", bundle: .module)
         case .cache(let reason):
-            return "Policy bundle cache error: \(reason)"
+            String(localized: "Policy bundle cache error: \(reason)", bundle: .module)
         }
     }
 }
@@ -106,3 +106,12 @@ extension CerbosError {
         return false
     }
 }
+
+#if !canImport(Darwin)
+// swift-corelibs-foundation has no `String(localized:bundle:)`; Linux only runs the unit tests, in English.
+extension String {
+    fileprivate init(localized value: String, bundle: Bundle) {
+        self = value
+    }
+}
+#endif

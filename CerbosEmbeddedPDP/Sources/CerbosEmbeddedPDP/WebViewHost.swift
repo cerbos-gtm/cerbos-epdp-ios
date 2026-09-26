@@ -1,6 +1,7 @@
 #if canImport(WebKit)
 import Foundation
 import WebKit
+import os
 
 /// Owns the hidden `WKWebView` that runs the bridge and the Cerbos WebAssembly engine.
 ///
@@ -12,6 +13,8 @@ final class CerbosWebViewHost: NSObject {
     static let scheme = "cerbos-epdp"
     static let pageURL = URL(string: "\(scheme)://app/index.html")!
     static let eventHandlerName = "cerbosEvents"
+    private static let largeResponseBytes = 8 * 1024
+    private static let signposter = OSSignposter(subsystem: CerbosLog.subsystem, category: "Bridge")
 
     var onEvent: ((BridgeEvent) -> Void)?
     var onProcessTerminated: (() -> Void)?
@@ -114,21 +117,32 @@ final class CerbosWebViewHost: NSObject {
 
     /// Invokes a bridge method and decodes its result, mapping bridge failures with `failure`.
     /// A call still unresolved after `timeout` throws ``CerbosError/timeout(operation:)``.
-    func invoke<Result: Decodable>(
+    func invoke<Result: Decodable & Sendable>(
         _ method: String,
-        params: (any Encodable)? = nil,
+        params: (any Encodable & Sendable)? = nil,
         timeout: Duration? = nil,
+        largeRequest: Bool = false,
         failure: (BridgeError) -> CerbosError
     ) async throws(CerbosError) -> Result {
         guard webView != nil, isBridgeReady else {
             throw CerbosError.notReady
         }
+        // Shows each call as an interval in Instruments (os_signpost), in any app that embeds the package.
+        let signpost = Self.signposter.beginInterval("Bridge call", id: Self.signposter.makeSignpostID(), "\(method, privacy: .public)")
+        defer { Self.signposter.endInterval("Bridge call", signpost) }
+
+        // Coding moves off the main actor only for large payloads: the executor hops cost more
+        // (~0.06 ms per call) than coding a typical request on the main thread.
         var paramsJSON: String?
         if let params {
-            paramsJSON = try BridgeJSON.encode(params)
+            paramsJSON = largeRequest ? try await BridgeJSON.encodeConcurrently(params) : try BridgeJSON.encode(params)
         }
         let envelopeJSON = try await callBridge(method: method, paramsJSON: paramsJSON, timeout: timeout)
-        return try BridgeJSON.unwrap(Result.self, envelopeJSON: envelopeJSON, failure: failure)
+        let envelope =
+            envelopeJSON.utf8.count > Self.largeResponseBytes
+            ? try await BridgeJSON.decodeEnvelopeConcurrently(Result.self, from: envelopeJSON)
+            : try BridgeJSON.decode(BridgeEnvelope<Result>.self, from: envelopeJSON)
+        return try BridgeJSON.unwrap(envelope, failure: failure)
     }
 
     /// The hot path of every decision. Uses the completion-handler API and a `DispatchWorkItem` timer
@@ -141,7 +155,9 @@ final class CerbosWebViewHost: NSObject {
             // WebKit cannot cancel a running call; the timer just resolves it first.
             let call = BridgeCall(continuation)
             if let timeout {
-                let timer = DispatchWorkItem { call.finish(.failure(.timeout(operation: method))) }
+                let timer = DispatchWorkItem {
+                    MainActor.assumeIsolated { call.finish(.failure(.timeout(operation: method))) }
+                }
                 call.timer = timer
                 DispatchQueue.main.asyncAfter(deadline: .now() + timeout.timeInterval, execute: timer)
             }
@@ -174,7 +190,7 @@ final class CerbosWebViewHost: NSObject {
             in: .page
         ) { result in
             if case .failure(let error) = result {
-                CerbosLog.error("resolveCallback failed: \(String(describing: error))")
+                CerbosLog.error("resolveCallback failed", detail: String(describing: error))
             }
         }
     }
@@ -190,7 +206,7 @@ final class CerbosWebViewHost: NSObject {
         do {
             event = try BridgeJSON.decode(BridgeEvent.self, from: json)
         } catch {
-            CerbosLog.error("Failed to decode bridge event: \(String(describing: error))")
+            CerbosLog.error("Failed to decode bridge event", detail: String(describing: error))
             return
         }
         if case .bridgeReady = event {
@@ -210,8 +226,8 @@ final class CerbosWebViewHost: NSObject {
 }
 
 /// Resumes the continuation exactly once, from the reply or the timer, whichever comes first.
-/// Both run on the main queue, which is why `@unchecked Sendable` is safe.
-private final class BridgeCall: @unchecked Sendable {
+@MainActor
+private final class BridgeCall {
     private var continuation: CheckedContinuation<Result<String, CerbosError>, Never>?
     var timer: DispatchWorkItem?
 
@@ -220,7 +236,6 @@ private final class BridgeCall: @unchecked Sendable {
     }
 
     func finish(_ result: Result<String, CerbosError>) {
-        dispatchPrecondition(condition: .onQueue(.main))
         guard let continuation else {
             if case .success = result {
                 CerbosLog.debug("A bridge call completed after its timeout; the late result was discarded")
@@ -316,7 +331,7 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         guard let mimeType = Self.files[name],
             let data = try? Data(contentsOf: directory.appendingPathComponent(name), options: .mappedIfSafe)
         else {
-            CerbosLog.error("Bridge resource not found: \(url.absoluteString)")
+            CerbosLog.error("Bridge resource not found", detail: url.absoluteString)
             let response = HTTPURLResponse(
                 url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/plain"])!
             urlSchemeTask.didReceive(response)

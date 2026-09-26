@@ -2,14 +2,13 @@ import CerbosEmbeddedPDP
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(CerbosEmbeddedPDP.self) private var pdp
 
-    @AppStorage("cerbos.hub.ruleId") private var ruleId = "AVGB9RP6HFBL"
-    @AppStorage("cerbos.hub.baseURL") private var hubBaseURL = ""
-    @AppStorage("cerbos.hub.clientId") private var clientId = ""
+    @AppStorage(HubSettings.Key.ruleId) private var ruleId = HubSettings.defaultRuleId
+    @AppStorage(HubSettings.Key.baseURL) private var hubBaseURL = ""
+    @AppStorage(HubSettings.Key.clientId) private var clientId = ""
     @State private var clientSecret = Keychain.string(for: Keychain.clientSecretKey) ?? ""
 
-    @State private var pdp: CerbosEmbeddedPDP?
     @State private var scenario = DemoScenario()
     @State private var lastResult: CheckResult?
     @State private var lastDuration: Duration?
@@ -23,7 +22,7 @@ struct ContentView: View {
             Form {
                 statusSection
                 checkSection
-                if let pdp, !pdp.logs.isEmpty {
+                if !pdp.logs.isEmpty {
                     logsSection(pdp)
                 }
             }
@@ -41,39 +40,28 @@ struct ContentView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu("More", systemImage: "ellipsis") {
                         Button("Restart engine", systemImage: "arrow.clockwise") {
-                            Task { await pdp?.restart() }
+                            Task { await pdp.restart() }
                         }
-                        .disabled(pdp == nil || pdp?.status == .loading)
+                        .disabled(pdp.status == .loading)
                         Button("Clear offline cache", systemImage: "trash", role: .destructive) {
-                            Task { await pdp?.clearOfflineCache() }
+                            Task { await pdp.clearOfflineCache() }
                         }
-                        .disabled(pdp == nil)
                     }
                 }
             }
             .sheet(isPresented: $showsHubSettings) {
                 HubSettingsView(
                     ruleId: $ruleId, hubBaseURL: $hubBaseURL, clientId: $clientId, clientSecret: $clientSecret,
-                    isLoading: pdp?.status == .loading
+                    isLoading: pdp.status == .loading
                 ) {
-                    Task { await startPDP() }
+                    Task { await applySettings() }
                 }
-            }
-            .task {
-                if pdp == nil {
-                    await startPDP()
-                }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                // WebKit may discard the content process while suspended; rebuild it before the next check.
-                guard phase == .active, let pdp else { return }
-                Task { await pdp.checkHealth() }
             }
         }
     }
 
     private var subtitle: String {
-        if let server = pdp?.server {
+        if let server = pdp.server {
             return "Cerbos \(server.version) · rule \(ruleId)"
         }
         return "rule \(ruleId)"
@@ -84,40 +72,35 @@ struct ContentView: View {
     @ViewBuilder
     private var statusSection: some View {
         Section {
-            if let pdp {
-                StatusBanner(status: pdp.status)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
+            StatusBanner(status: pdp.status)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
 
-                if let bundle = pdp.bundle {
-                    LabeledContent("Bundle", value: bundle.bundleId)
-                    LabeledContent("Rule revision", value: bundle.ruleRevision)
-                    LabeledContent("Loaded from", value: bundle.source == .cache ? "Offline cache" : "Cerbos Hub")
-                    LabeledContent("Received", value: bundle.receivedAt.formatted(date: .omitted, time: .standard))
-                }
-                if let update = pdp.lastPolicyUpdate {
-                    LabeledContent("Last update check") {
-                        HStack(spacing: 6) {
-                            Image(systemName: update.succeeded ? "checkmark.circle" : "exclamationmark.triangle")
-                                .foregroundStyle(update.succeeded ? .green : .orange)
-                            Text(update.date.formatted(date: .omitted, time: .shortened))
-                                .foregroundStyle(.secondary)
-                        }
+            if let bundle = pdp.bundle {
+                LabeledContent("Bundle", value: bundle.bundleId)
+                LabeledContent("Rule revision", value: bundle.ruleRevision)
+                LabeledContent("Loaded from", value: bundle.source == .cache ? "Offline cache" : "Cerbos Hub")
+                LabeledContent("Received", value: bundle.receivedAt.formatted(date: .omitted, time: .standard))
+            }
+            if let update = pdp.lastPolicyUpdate {
+                LabeledContent("Last update check") {
+                    HStack(spacing: 6) {
+                        Image(systemName: update.succeeded ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(update.succeeded ? .green : .orange)
+                        Text(update.date.formatted(date: .omitted, time: .shortened))
+                            .foregroundStyle(.secondary)
                     }
                 }
-                if case .failed = pdp.status {
-                    Button("Try again", systemImage: "arrow.clockwise") {
-                        Task { await pdp.start() }
-                    }
+            }
+            if case .failed = pdp.status {
+                Button("Try again", systemImage: "arrow.clockwise") {
+                    Task { await pdp.start() }
                 }
-                if let settingsError {
-                    Label(settingsError, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                }
-            } else {
-                ContentUnavailableView(
-                    "Not started", systemImage: "shield.slash", description: Text("Configure a Cerbos Hub rule to load policies."))
+            }
+            if let settingsError {
+                Label(settingsError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.footnote)
             }
         } header: {
             Text("Embedded PDP")
@@ -155,7 +138,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
-            .disabled(pdp?.isReady != true || isChecking)
+            .disabled(!pdp.isReady || isChecking)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
 
@@ -192,7 +175,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(line.message)
                         .font(.footnote.monospaced())
-                        .foregroundStyle(line.level == "error" ? .red : line.level == "warn" ? .orange : .primary)
+                        .foregroundStyle(line.level == .error ? .red : line.level == .warning ? .orange : .primary)
                     Text(line.date.formatted(date: .omitted, time: .standard))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -203,20 +186,8 @@ struct ContentView: View {
 
     // MARK: Actions
 
-    private func makeConfiguration() -> CerbosEmbeddedPDP.Configuration {
-        var configuration = CerbosEmbeddedPDP.Configuration(ruleId: ruleId)
-        if let url = HubURLValidation.url(from: hubBaseURL) {
-            configuration.hubBaseURL = url
-        }
-        let trimmedClientId = clientId.trimmingCharacters(in: .whitespaces)
-        if !trimmedClientId.isEmpty, !clientSecret.isEmpty {
-            configuration.credentials = .init(clientId: trimmedClientId, clientSecret: clientSecret)
-        }
-        return configuration
-    }
-
-    /// The first apply creates the single PDP instance; later ones reconfigure it, reusing the compiled engine.
-    private func startPDP() async {
+    /// Reconfigures the shared PDP in place, reusing the compiled engine.
+    private func applySettings() async {
         lastResult = nil
         checkError = nil
         settingsError = nil
@@ -226,18 +197,11 @@ struct ContentView: View {
                 settingsError = "The client secret was not stored in the Keychain: \(Keychain.message(for: status))"
             }
         }
-        let configuration = makeConfiguration()
-        if let pdp {
-            await pdp.reconfigure(configuration)
-        } else {
-            let pdp = CerbosEmbeddedPDP(configuration: configuration)
-            self.pdp = pdp
-            await pdp.start()
-        }
+        await pdp.reconfigure(
+            HubSettings.configuration(ruleId: ruleId, hubBaseURL: hubBaseURL, clientId: clientId, clientSecret: clientSecret))
     }
 
     private func runCheck() async {
-        guard let pdp else { return }
         isChecking = true
         defer { isChecking = false }
         checkError = nil
@@ -472,4 +436,5 @@ private struct EffectBadge: View {
 
 #Preview {
     ContentView()
+        .environment(CerbosEmbeddedPDP(configuration: .init(ruleId: HubSettings.defaultRuleId)))
 }

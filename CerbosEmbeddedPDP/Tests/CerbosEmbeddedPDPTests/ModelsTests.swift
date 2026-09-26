@@ -261,3 +261,18 @@ struct JSONValueTests {
         #expect(decoded["missing"] == nil)
     }
 }
+
+@Suite("Log levels")
+struct LogLevelTests {
+    @Test func mapsBridgeConsoleLevels() {
+        #expect(CerbosLogLevel(bridgeLevel: "debug") == .debug)
+        #expect(CerbosLogLevel(bridgeLevel: "warn") == .warning)
+        #expect(CerbosLogLevel(bridgeLevel: "error") == .error)
+        #expect(CerbosLogLevel(bridgeLevel: "something-else") == .info)
+    }
+
+    @Test func ordersBySeverity() {
+        #expect(CerbosLogLevel.debug < .info)
+        #expect(CerbosLogLevel.warning < .error)
+    }
+}

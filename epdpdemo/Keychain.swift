@@ -34,12 +34,16 @@ enum Keychain {
             kSecAttrService: service,
             kSecAttrAccount: key,
         ]
-        let deleteStatus = SecItemDelete(query as CFDictionary)
         guard let value, !value.isEmpty else {
-            return deleteStatus == errSecItemNotFound ? errSecSuccess : deleteStatus
+            let status = SecItemDelete(query as CFDictionary)
+            return status == errSecItemNotFound ? errSecSuccess : status
         }
+        // Update in place so there is never a moment without a stored secret; add on first use.
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData: data] as CFDictionary)
+        guard status == errSecItemNotFound else { return status }
         var attributes = query
-        attributes[kSecValueData] = Data(value.utf8)
+        attributes[kSecValueData] = data
         attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return SecItemAdd(attributes as CFDictionary, nil)
     }
