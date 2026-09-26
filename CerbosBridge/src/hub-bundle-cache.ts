@@ -2,20 +2,12 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { GetBundleResponseSchema } from "@cerbos/api/cerbos/cloud/epdp/v2/epdp_pb";
 
 /**
- * Offline cache for Cerbos Hub policy bundles.
+ * Offline cache for Hub policy bundles. `@cerbos/embedded-client` keeps bundles in memory only, so
+ * this wraps `fetch` to observe `GetBundle` responses and hand each bundle to the native host.
  *
- * `@cerbos/embedded-client` keeps the downloaded policy bundle in memory only, so a cold start
- * without connectivity has no policies to evaluate. This module transparently observes the
- * Hub `BundleService/GetBundle` responses made by the client's `PolicyLoader`:
- *
- * - every successful response containing a bundle is handed to the native host for persistence;
- * - if the *initial* load fails for a reason that is not the client's fault (offline, DNS, a
- *   stalled connection, a Hub 5xx, a captive portal answering with HTML), the most recently
- *   persisted response for the same rule is replayed once, so the app starts with the last known
- *   policies. HTTP 4xx (disabled rule, bad or revoked credentials) is never masked by the cache.
- *
- * Subsequent update checks still go to Hub as usual; a failed update never replays the cache,
- * because the loader already holds an active bundle in that case.
+ * If the *initial* load fails for network or server reasons (offline, stalled, 5xx, captive
+ * portal), the persisted response is replayed once. A 4xx (disabled rule, revoked credentials) is
+ * never masked, and later update failures never replay, since the loader already has a bundle.
  */
 
 export interface BundleInfo {
@@ -40,9 +32,8 @@ export class HubBundleCache {
   private loadedOnce = false;
   private initialLoadTimeoutMs = 20_000;
   /**
-   * Incremented by every `configure()` call. A GetBundle request started under an earlier session
-   * belongs to a loader that has since been stopped, so its outcome must neither be observed nor
-   * trigger a cache replay: doing so would consume the fallback that the current session needs.
+   * Bumped by `configure()`. A request from an earlier session belongs to a stopped loader; it must
+   * not be observed or replay the cache, or it would consume the current session's fallback.
    */
   private session = 0;
   private _current: BundleInfo | undefined;
@@ -86,8 +77,7 @@ export class HubBundleCache {
         response = await originalFetch(input, initialLoad ? this.withInitialLoadTimeout(init) : init);
       } catch (error) {
         if (session !== this.session) {
-          // A newer init reconfigured the cache while this request was in flight (typically the
-          // abort caused by stopping the old loader). It must not consume the new session's fallback.
+          // Superseded while in flight (typically the abort from stopping the old loader).
           throw error;
         }
         // Offline, DNS failure, connection refused, or the initial-load timeout.
@@ -104,9 +94,8 @@ export class HubBundleCache {
       }
 
       if (!response.ok) {
-        // Server-side trouble is a reason to keep going with the last known policies. A client
-        // error (disabled rule, bad or revoked credentials, unknown rule) must surface instead:
-        // replaying the cache would let a revoked bundle keep working on every cold start.
+        // Only server-side trouble falls back. Replaying on a client error would let a revoked
+        // bundle keep working on every cold start.
         if (this.isRetryableStatus(response.status)) {
           const fallback = this.fallback(`HTTP ${response.status}`);
           if (fallback) {

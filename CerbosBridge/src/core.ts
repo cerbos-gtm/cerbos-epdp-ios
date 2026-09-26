@@ -28,9 +28,8 @@ export interface SerializedError {
   name: string;
   message: string;
   /**
-   * Coarse classification for initialisation failures: `engine` (WebAssembly unavailable or the
-   * module failed to load), `policySource` (Cerbos Hub rejected the request, could not serve the
-   * bundle, or was unreachable with no cached bundle to fall back on), or `bridge` (anything else).
+   * Classifies init failures: `engine` (WebAssembly missing or broken), `policySource` (Hub rejected
+   * or could not serve the bundle, with no cache to fall back on), or `bridge` (anything else).
    */
   kind?: ErrorKind;
   /** gRPC status code for `NotOK` errors. */
@@ -129,12 +128,14 @@ export class CerbosBridgeCore {
   private status: BridgeStatus = "idle";
   private lastError: SerializedError | undefined;
   private readonly bundleCache: HubBundleCache;
-  /** Incremented per `init`; lets a superseded initialisation notice it must not touch the newer client. */
+  /** Bumped per `init`, so a superseded init leaves the newer client alone. */
   private generation = 0;
   private initialised = false;
   private activateOnLoad = true;
   private activeBundle: BundleInfo | undefined;
   private pendingBundle: BundleInfo | undefined;
+  /** Set while `warmUp` runs, so its throwaway checks never reach the host as decisions. */
+  private warmingUp = false;
 
   public constructor(private readonly host: BridgeHost) {
     this.bundleCache = new HubBundleCache({
@@ -147,7 +148,7 @@ export class CerbosBridgeCore {
   /** Called whenever the loader receives a bundle from Hub (or the cache replays one). */
   private handleDownloadedBundle(bundle: BundleInfo): void {
     if (!this.initialised || this.activateOnLoad) {
-      // The initial bundle is always activated by the loader; later ones are when activateOnLoad is set.
+      // The loader always activates the initial bundle; later ones only with activateOnLoad.
       this.activeBundle = bundle;
       this.pendingBundle = undefined;
     } else {
@@ -275,10 +276,14 @@ export class CerbosBridgeCore {
     if (options.onValidationError === "throw") {
       embeddedOptions.onValidationError = "throw";
     } else if (options.onValidationError === "report") {
-      embeddedOptions.onValidationError = (errors) => this.host.emit({ type: "validationErrors", errors });
+      embeddedOptions.onValidationError = (errors) => {
+        if (!this.warmingUp) this.host.emit({ type: "validationErrors", errors });
+      };
     }
     if (params.emitDecisions) {
-      embeddedOptions.onDecision = (entry: DecisionLogEntry) => this.host.emit({ type: "decision", entry: toPlain(entry) });
+      embeddedOptions.onDecision = (entry: DecisionLogEntry) => {
+        if (!this.warmingUp) this.host.emit({ type: "decision", entry: toPlain(entry) });
+      };
     }
     if (params.jwtDecoding) {
       const decode = this.host.decodeJWTPayload;
@@ -308,6 +313,8 @@ export class CerbosBridgeCore {
       throw new InitError(error, this.lastError.kind);
     }
 
+    await this.warmUp(client);
+
     if (generation !== this.generation) {
       loader.stop();
       throw new Error("Initialisation was superseded by a newer init call");
@@ -327,6 +334,21 @@ export class CerbosBridgeCore {
         builtAt: timestampToISO(serverMetadata.builtAt),
       },
     };
+  }
+
+  /**
+   * The first check pays for JIT compilation and first-use setup (about 20 ms, then well under 1 ms).
+   * Running a throwaway check before reporting ready keeps that off the app's first real decision.
+   */
+  private async warmUp(client: Embedded): Promise<void> {
+    this.warmingUp = true;
+    try {
+      await client.checkResources(warmUpRequest);
+    } catch {
+      // Policies may legitimately reject this request (for example with schema enforcement).
+    } finally {
+      this.warmingUp = false;
+    }
   }
 
   private async checkResources(request: CheckResourcesRequest): Promise<unknown> {
@@ -382,6 +404,11 @@ export class CerbosBridgeCore {
     this.host.emit({ type: "status", status, ...(error ? { error } : {}) });
   }
 }
+
+const warmUpRequest: CheckResourcesRequest = {
+  principal: { id: "cerbos-epdp-warm-up", roles: ["cerbos-epdp-warm-up"] },
+  resources: [{ resource: { kind: "cerbos-epdp-warm-up", id: "1" }, actions: ["read"] }],
+};
 
 export function bundleCacheKey(baseUrl: string | undefined, ruleId: string, scopes: string[]): string {
   // Keep in sync with `CerbosEmbeddedPDP.offlineCacheKey` on the Swift side.

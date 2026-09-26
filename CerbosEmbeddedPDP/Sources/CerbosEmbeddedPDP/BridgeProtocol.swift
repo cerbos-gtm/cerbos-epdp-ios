@@ -176,9 +176,13 @@ enum BridgeJSON {
         return encoder
     }
 
+    // Built once and never mutated: creating a coder costs more than coding a typical request.
+    nonisolated(unsafe) private static let encoder = makeEncoder()
+    nonisolated(unsafe) private static let decoder = makeDecoder()
+
     static func encode<T: Encodable>(_ value: T) throws(CerbosError) -> String {
         do {
-            let data = try makeEncoder().encode(value)
+            let data = try encoder.encode(value)
             guard let string = String(data: data, encoding: .utf8) else {
                 throw CerbosError.invalidRequest(reason: "request is not valid UTF-8")
             }
@@ -192,7 +196,7 @@ enum BridgeJSON {
 
     static func decode<T: Decodable>(_ type: T.Type, from string: String) throws(CerbosError) -> T {
         do {
-            return try makeDecoder().decode(type, from: Data(string.utf8))
+            return try decoder.decode(type, from: Data(string.utf8))
         } catch {
             throw CerbosError.invalidResponse(reason: String(describing: error))
         }

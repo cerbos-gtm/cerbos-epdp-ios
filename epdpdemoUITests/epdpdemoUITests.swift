@@ -1,9 +1,6 @@
 import XCTest
 
-/// Launches the demo and waits for the embedded PDP to reach `Ready`, which exercises the web view
-/// host, the WASM engine and a real policy bundle download from Cerbos Hub on the simulator.
-///
-/// Requires network access to `api.cerbos.cloud`.
+/// Launches the demo and waits for the PDP to reach `Ready`. Needs network access to Cerbos Hub.
 final class epdpdemoUITests: XCTestCase {
 
     override func setUpWithError() throws {

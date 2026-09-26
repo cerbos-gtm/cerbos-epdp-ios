@@ -1,7 +1,7 @@
 /**
- * WebKit entry point. Loaded by `index.html` inside the hidden `WKWebView` that hosts the
- * Cerbos embedded PDP. The native side calls `CerbosBridge.invoke(method, paramsJSON)` via
- * `callAsyncJavaScript` and receives events through the `cerbosEvents` script message handler.
+ * WebKit entry point, loaded by `index.html` in the hidden `WKWebView`. Swift calls
+ * `CerbosBridge.invoke(method, paramsJSON)` via `callAsyncJavaScript`; events go back through the
+ * `cerbosEvents` script message handler.
  */
 import type { JWT } from "@cerbos/core";
 
@@ -53,9 +53,8 @@ function requestFromHost(event: Extract<BridgeEvent, { id: string }>): Promise<u
   });
 }
 
-// The engine module is compiled once per page and reused by every `init`, so reconfiguring the
-// client (new rule, new credentials) or recovering from a failed policy load does not pay the
-// 20 MB compile again. Only a lost web content process forces a recompile.
+// Compiled once per page and reused by every `init`, so reconfiguring or retrying a failed policy
+// load skips the 20 MB compile. Only a new page (such as after a lost content process) recompiles.
 let compiledModule: Promise<WebAssembly.Module> | undefined;
 
 function loadEngineModule(): Promise<WebAssembly.Module> {
@@ -63,8 +62,8 @@ function loadEngineModule(): Promise<WebAssembly.Module> {
     return Promise.reject(new EngineError("WebAssembly streaming compilation is not available in this web view"));
   }
   compiledModule ??= (async () => {
-    // Served by the native URL scheme handler with `Content-Type: application/wasm`, so WebKit
-    // streams it straight into the compiler (no base64, no copies).
+    // Served as `application/wasm` by the native scheme handler, so WebKit streams it straight
+    // into the compiler.
     let response: Response;
     try {
       response = await fetch("server.wasm");

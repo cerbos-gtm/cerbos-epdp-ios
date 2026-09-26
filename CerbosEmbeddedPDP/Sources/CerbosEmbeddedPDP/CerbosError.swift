@@ -8,12 +8,10 @@ public enum CerbosError: Error, Sendable, Equatable {
     /// The web content process that hosts the WebAssembly module could not be started or was lost.
     case webView(reason: String)
 
-    /// The bridge did not answer in time: the page did not become ready within the start timeout,
-    /// or a check or plan exceeded `Configuration.requestTimeout`. `operation` names what timed out.
+    /// `start()` exceeded `startTimeout`, or a check or plan exceeded `requestTimeout`.
     case timeout(operation: String)
 
-    /// The engine cannot run: WebAssembly is unavailable in the web view (for example Lockdown Mode)
-    /// or the bundled `server.wasm` failed to load or compile.
+    /// WebAssembly is unavailable in the web view, or the bundled `server.wasm` failed to load or compile.
     case engine(reason: String)
 
     /// Cerbos Hub rejected or could not serve the policy bundle (see `BridgeError.code` for the gRPC status).
@@ -28,8 +26,7 @@ public enum CerbosError: Error, Sendable, Equatable {
     /// The bridge returned a payload that could not be decoded.
     case invalidResponse(reason: String)
 
-    /// A request could not be encoded for the bridge, or a configuration value (for example a
-    /// non-HTTPS `hubBaseURL`) cannot be used by it.
+    /// A request could not be encoded, or a configuration value (such as a non-HTTPS `hubBaseURL`) is invalid.
     case invalidRequest(reason: String)
 
     /// Reading from or writing to the on-disk policy bundle cache failed.

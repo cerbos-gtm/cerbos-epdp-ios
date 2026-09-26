@@ -2,13 +2,11 @@
 import Foundation
 import WebKit
 
-/// Owns the hidden `WKWebView` that runs `@cerbos/embedded-client` and the Cerbos WebAssembly module.
+/// Owns the hidden `WKWebView` that runs the bridge and the Cerbos WebAssembly engine.
 ///
-/// The page, bridge script and `server.wasm` are served from the app bundle through a custom URL
-/// scheme, so nothing is fetched from a CDN and WebKit can compile the module with
-/// `WebAssembly.instantiateStreaming`. Calls into the page go through `callAsyncJavaScript`, which
-/// serialises arguments safely and returns the bridge's JSON envelope; events come back through a
-/// script message handler.
+/// Resources are served from the package bundle through a custom URL scheme, which lets WebKit
+/// stream-compile `server.wasm`. Calls go through `callAsyncJavaScript` (arguments are passed, never
+/// interpolated); events come back through a script message handler.
 @MainActor
 final class CerbosWebViewHost: NSObject {
     static let scheme = "cerbos-epdp"
@@ -49,9 +47,8 @@ final class CerbosWebViewHost: NSObject {
         configuration.setURLSchemeHandler(BundleSchemeHandler(directory: resourcesDirectory), forURLScheme: Self.scheme)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        // Lockdown Mode removes WebAssembly from web views. The page only ever runs the bundled
-        // bridge and engine, so opt this trusted content out when the user has Lockdown Mode on.
-        // The setter is only touched in that case; the default already reflects the system setting.
+        // Lockdown Mode removes WebAssembly. The page only runs bundled code, so opt it out, touching
+        // the setter only when needed (the default already reflects the system setting).
         if configuration.defaultWebpagePreferences.isLockdownModeEnabled {
             CerbosLog.info("Lockdown Mode is enabled; opting the embedded PDP page out for its bundled content")
             configuration.defaultWebpagePreferences.isLockdownModeEnabled = false
@@ -115,8 +112,8 @@ final class CerbosWebViewHost: NSObject {
 
     // MARK: Calls into the bridge
 
-    /// Invokes a bridge method and decodes its result. Bridge-side failures are mapped with `failure`.
-    /// A `timeout` turns a call that never resolves in the page into ``CerbosError/timeout(operation:)``.
+    /// Invokes a bridge method and decodes its result, mapping bridge failures with `failure`.
+    /// A call still unresolved after `timeout` throws ``CerbosError/timeout(operation:)``.
     func invoke<Result: Decodable>(
         _ method: String,
         params: (any Encodable)? = nil,
@@ -134,52 +131,37 @@ final class CerbosWebViewHost: NSObject {
         return try BridgeJSON.unwrap(Result.self, envelopeJSON: envelopeJSON, failure: failure)
     }
 
+    /// The hot path of every decision. Uses the completion-handler API and a `DispatchWorkItem` timer
+    /// instead of `Task`s, which measurably cuts latency.
     private func callBridge(method: String, paramsJSON: String?, timeout: Duration?) async throws(CerbosError) -> String {
-        do {
-            guard let timeout else {
-                return try await evaluateBridgeCall(method: method, paramsJSON: paramsJSON)
-            }
-            // WebKit cannot cancel a running call, so race it against a timer instead of a task group
-            // (which would wait for the JavaScript call to finish before returning).
-            let race = BridgeCallRace()
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
-                race.continuation = continuation
-                race.timer = Task { @MainActor in
-                    try? await Task.sleep(for: timeout)
-                    race.resume(.failure(CerbosError.timeout(operation: method)))
-                }
-                Task { @MainActor in
-                    do {
-                        race.resume(.success(try await self.evaluateBridgeCall(method: method, paramsJSON: paramsJSON)))
-                    } catch {
-                        race.resume(.failure(error))
-                    }
-                }
-            }
-        } catch let error as CerbosError {
-            throw error
-        } catch {
-            throw CerbosError.webView(reason: Self.describe(error))
-        }
-    }
-
-    private func evaluateBridgeCall(method: String, paramsJSON: String?) async throws -> String {
         guard let webView else {
             throw CerbosError.notReady
         }
-        // The async overlay uses the `contentWorld:` label; `in:in:` would silently pick the
-        // completion-handler overload and return immediately.
-        let value = try await webView.callAsyncJavaScript(
-            "return await window.CerbosBridge.invoke(method, params);",
-            arguments: ["method": method, "params": paramsJSON ?? NSNull()],
-            in: nil,
-            contentWorld: .page
-        )
-        guard let envelopeJSON = value as? String else {
-            throw CerbosError.invalidResponse(
-                reason: "bridge returned \(value.map { String(describing: type(of: $0)) } ?? "nil") instead of a JSON string")
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<Result<String, CerbosError>, Never>) in
+            // WebKit cannot cancel a running call; the timer just resolves it first.
+            let call = BridgeCall(continuation)
+            if let timeout {
+                let timer = DispatchWorkItem { call.finish(.failure(.timeout(operation: method))) }
+                call.timer = timer
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout.timeInterval, execute: timer)
+            }
+            webView.callAsyncJavaScript(
+                "return window.CerbosBridge.invoke(method, params)",
+                arguments: ["method": method, "params": paramsJSON ?? NSNull()],
+                in: nil,
+                in: .page
+            ) { result in
+                switch result {
+                case .success(let value as String):
+                    call.finish(.success(value))
+                case .success(let value):
+                    call.finish(.failure(.invalidResponse(reason: "bridge returned \(type(of: value)) instead of a JSON string")))
+                case .failure(let error):
+                    call.finish(.failure(.webView(reason: Self.describe(error))))
+                }
+            }
         }
-        return envelopeJSON
+        return try result.get()
     }
 
     /// Answers a `jwtDecode` request from the bridge.
@@ -227,13 +209,18 @@ final class CerbosWebViewHost: NSObject {
     }
 }
 
-/// Resumes a bridge call's continuation exactly once, from whichever finishes first: the call or its timer.
-@MainActor
-private final class BridgeCallRace {
-    var continuation: CheckedContinuation<String, any Error>?
-    var timer: Task<Void, Never>?
+/// Resumes the continuation exactly once, from the reply or the timer, whichever comes first.
+/// Both run on the main queue, which is why `@unchecked Sendable` is safe.
+private final class BridgeCall: @unchecked Sendable {
+    private var continuation: CheckedContinuation<Result<String, CerbosError>, Never>?
+    var timer: DispatchWorkItem?
 
-    func resume(_ result: Result<String, any Error>) {
+    init(_ continuation: CheckedContinuation<Result<String, CerbosError>, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(_ result: Result<String, CerbosError>) {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let continuation else {
             if case .success = result {
                 CerbosLog.debug("A bridge call completed after its timeout; the late result was discarded")
@@ -242,7 +229,14 @@ private final class BridgeCallRace {
         }
         self.continuation = nil
         timer?.cancel()
-        continuation.resume(with: result)
+        timer = nil
+        continuation.resume(returning: result)
+    }
+}
+
+extension Duration {
+    fileprivate var timeInterval: TimeInterval {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }
 
@@ -342,8 +336,8 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         )!
         urlSchemeTask.didReceive(response)
 
-        // Hand the (memory-mapped) file over in chunks to bound the size of each IPC message. The
-        // loop never suspends, so the task cannot be stopped part-way and needs no cancellation check.
+        // Chunk the memory-mapped file to bound each IPC message. The loop never suspends, so the
+        // task cannot be stopped part-way.
         var offset = 0
         while offset < data.count {
             let end = min(offset + Self.chunkSize, data.count)
@@ -354,7 +348,7 @@ private final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {
-        // Responses are delivered synchronously in `start`, so there is never an in-progress task to stop.
+        // `start` responds synchronously, so there is never a task in progress.
     }
 }
 #endif

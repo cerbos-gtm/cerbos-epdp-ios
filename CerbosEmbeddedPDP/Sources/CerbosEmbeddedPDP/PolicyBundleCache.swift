@@ -1,8 +1,7 @@
 import Foundation
 
-/// Persists the most recent Cerbos Hub policy bundle response per rule, so the embedded PDP can
-/// start offline with the last known policies. Bodies are stored as received from Hub (opaque
-/// binary); the bridge replays them only when the initial download fails.
+/// Stores the latest Hub `GetBundle` response per cache key, as received, so the PDP can start
+/// offline. The bridge replays it only when the initial download fails.
 public actor PolicyBundleCache {
     public struct Entry: Sendable, Codable, Equatable {
         public var key: String
@@ -19,9 +18,8 @@ public actor PolicyBundleCache {
         self.directory = directory ?? Self.defaultDirectory()
     }
 
-    /// `Application Support/CerbosEmbeddedPDP/policy-bundles`. On macOS, where Application Support
-    /// is shared between non-sandboxed apps, the bundle identifier is added so one app's
-    /// ``removeAll()`` cannot discard another app's cache.
+    /// `Application Support/CerbosEmbeddedPDP/policy-bundles`. On macOS the bundle identifier is
+    /// added, because non-sandboxed apps share Application Support and ``removeAll()`` would clear theirs.
     public static func defaultDirectory() -> URL {
         let base =
             FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -35,7 +33,7 @@ public actor PolicyBundleCache {
         return directory.appendingPathComponent("policy-bundles", isDirectory: true)
     }
 
-    /// Returns the cached response body for the key, or `nil` if there is none or it is corrupt.
+    /// Returns the cached response for the key, or `nil` if there is none. Corrupt entries are removed.
     public func load(key: String) -> (entry: Entry, body: Data)? {
         let files = fileURLs(for: key)
         guard let entryData = try? Data(contentsOf: files.entry),

@@ -1,12 +1,5 @@
-// Builds the WebKit bridge bundle and stages the Cerbos embedded PDP assets into the Swift package.
-//
-//   npm run build
-//
-// Outputs (committed to the repo so the Xcode project builds without Node installed):
-//   ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/index.html
-//   ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/bridge.js
-//   ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/server.wasm
-//   ../CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web/manifest.json
+// `npm run build`: bundles the bridge and stages index.html, bridge.js, server.wasm and manifest.json
+// into the Swift package's Resources/web. The output is committed so the Xcode project builds without Node.
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -27,7 +20,7 @@ const serverMetadata = JSON.parse(await readFile(path.join(serverPackageDir, "sr
 
 await mkdir(outDir, { recursive: true });
 
-// 1. Verify and copy the WebAssembly module, checking it against the checksum published by Cerbos.
+// 1. Copy the WebAssembly module after checking it against the checksum published by Cerbos.
 const wasmBytes = await readFile(wasmSource);
 const wasmSHA256 = createHash("sha256").update(wasmBytes).digest("hex");
 if (serverMetadata.wasmChecksum && serverMetadata.wasmChecksum !== wasmSHA256) {
@@ -35,7 +28,7 @@ if (serverMetadata.wasmChecksum && serverMetadata.wasmChecksum !== wasmSHA256) {
 }
 await copyFile(wasmSource, path.join(outDir, "server.wasm"));
 
-// 2. Bundle the bridge (IIFE, no external requests: everything the page needs is local).
+// 2. Bundle the bridge as a self-contained IIFE; the page makes no external requests.
 const versions = {
   "@cerbos/embedded-client": await packageVersion("@cerbos/embedded-client"),
   "@cerbos/embedded-server": await packageVersion("@cerbos/embedded-server"),
@@ -58,7 +51,7 @@ await build({
   },
 });
 
-// 3. Minimal host page. The bridge script and the WASM are fetched from the same custom-scheme origin.
+// 3. Host page. The bridge and the WASM are served from the same custom-scheme origin.
 await writeFile(
   path.join(outDir, "index.html"),
   `<!doctype html>
@@ -76,9 +69,8 @@ await writeFile(
 `,
 );
 
-// 4. Manifest consumed by the Swift side (versions, checksum) and by humans reviewing upgrades.
-// Deliberately free of timestamps so that a rebuild from the same inputs is byte-identical and CI
-// can detect a stale or hand-edited manifest with `git diff --exit-code`.
+// 4. Versions and checksums, for the Swift side and upgrade reviews. No timestamps, so a rebuild is
+// byte-identical and CI can catch a stale manifest with `git diff --exit-code`.
 const bridgeStat = await stat(path.join(outDir, "bridge.js"));
 const manifest = {
   versions,
