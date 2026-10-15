@@ -130,7 +130,8 @@ decision latency (excluding the native round trip); for the full round trip run
 
 - `cd CerbosEmbeddedPDP && swift test`: unit tests (macOS, Linux) and Hub integration tests (macOS).
 - `cd CerbosBridge && npm test`: bridge smoke test in Node, including the offline-cache rules.
-- Xcode test targets: the integration test inside the app on the simulator, and a UI test.
+- Xcode test targets: the integration test inside the app on the simulator, and UI tests that wait
+  for the engine to become ready and run a check through the demo's form.
 
 Integration tests need network access and use a public demo rule; override it with
 `CERBOS_RULE_ID` (`TEST_RUNNER_CERBOS_RULE_ID` under `xcodebuild`). CI runs everything on pull
