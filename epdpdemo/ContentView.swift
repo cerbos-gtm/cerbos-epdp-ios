@@ -139,6 +139,7 @@ struct ContentView: View {
             }
             .buttonStyle(.glassProminent)
             .disabled(!pdp.isReady || isChecking)
+            .accessibilityIdentifier("checkButton")
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
 
@@ -146,6 +147,7 @@ struct ContentView: View {
                 Label(checkError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .font(.footnote)
+                    .accessibilityIdentifier("checkError")
             }
 
             if let lastResult {
@@ -160,6 +162,7 @@ struct ContentView: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("checkDuration")
                 }
             }
         } header: {
@@ -393,6 +396,7 @@ private struct EffectRow: View {
             }
             Spacer()
             EffectBadge(effect: effect)
+                .accessibilityIdentifier("effect-\(action)")
         }
     }
 }
@@ -407,6 +411,7 @@ private struct EffectBadge: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .glassEffect(.regular.tint(tint.opacity(0.2)))
+            .accessibilityLabel(title)
     }
 
     private var title: String {
