@@ -21,38 +21,37 @@ final class epdpdemoUITests: XCTestCase {
         let app = try launchAndWaitUntilReady()
 
         let checkButton = app.buttons["checkButton"]
-        XCTAssertTrue(checkButton.waitForExistence(timeout: 10), "The check button should be present once the PDP is ready")
-        scrollIntoView(checkButton, in: app)
+        XCTAssertTrue(reveal(checkButton, in: app, timeout: 10), "The check button should be present once the PDP is ready")
         XCTAssertTrue(checkButton.isEnabled, "The check button should be enabled once the PDP is ready")
         checkButton.tap()
 
-        // The first badge appears once the decision is back from the engine; the rest render in the same update.
+        // The decisions render below the button once the engine answers, usually just past the fold.
         let readBadge = element(withIdentifier: "effect-read", in: app)
-        XCTAssertTrue(waitScrolling(for: readBadge, in: app, timeout: 30), "A decision for the read action should be shown after the check")
+        XCTAssertTrue(reveal(readBadge, in: app, timeout: 30), "A decision for the read action should be shown after the check")
 
         for action in ["read", "create", "update", "delete", "publish"] {
             let badge = element(withIdentifier: "effect-\(action)", in: app)
-            XCTAssertTrue(waitScrolling(for: badge, in: app, timeout: 5), "A decision for the \(action) action should be shown")
+            XCTAssertTrue(reveal(badge, in: app, timeout: 10), "A decision for the \(action) action should be shown")
             XCTAssertTrue(
                 ["Allow", "Deny"].contains(badge.label),
                 "The \(action) action should resolve to Allow or Deny, got “\(badge.label)”")
         }
 
         let duration = app.staticTexts["checkDuration"]
-        XCTAssertTrue(waitScrolling(for: duration, in: app, timeout: 5), "The evaluation time should be shown with the decisions")
+        XCTAssertTrue(reveal(duration, in: app, timeout: 10), "The evaluation time should be shown with the decisions")
         XCTAssertTrue(duration.label.hasPrefix("Evaluated locally in"), "Unexpected duration text: \(duration.label)")
         XCTAssertFalse(element(withIdentifier: "checkError", in: app).exists, "The check should not report an error")
 
         // A second check with a different principal goes through the same engine without an error.
         let adminRole = app.buttons["ADMIN"]
-        XCTAssertTrue(waitScrolling(for: adminRole, in: app, timeout: 5, direction: .down), "The role picker should offer ADMIN")
+        XCTAssertTrue(reveal(adminRole, in: app, timeout: 10), "The role picker should offer ADMIN")
         adminRole.tap()
-        scrollIntoView(checkButton, in: app)
+        XCTAssertTrue(reveal(checkButton, in: app, timeout: 10), "The check button should still be reachable")
         checkButton.tap()
         let enabledAgain = expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: checkButton)
         wait(for: [enabledAgain], timeout: 30)
         XCTAssertFalse(element(withIdentifier: "checkError", in: app).exists, "The second check should not report an error")
-        XCTAssertTrue(waitScrolling(for: readBadge, in: app, timeout: 5), "Decisions should still be shown after the second check")
+        XCTAssertTrue(reveal(readBadge, in: app, timeout: 10), "Decisions should still be shown after the second check")
         XCTAssertTrue(["Allow", "Deny"].contains(readBadge.label), "Unexpected decision after the second check: \(readBadge.label)")
     }
 
@@ -76,10 +75,6 @@ final class epdpdemoUITests: XCTestCase {
         return app
     }
 
-    private enum ScrollDirection {
-        case up, down
-    }
-
     /// Matches an element by identifier regardless of its accessibility type, which differs between
     /// SwiftUI containers and OS versions.
     @MainActor
@@ -87,41 +82,28 @@ final class epdpdemoUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    /// Rows in a `Form` only exist while on screen, so waiting for one may need the list scrolled.
+    /// Scrolls the form until the element is on screen and can be tapped, or the timeout passes.
+    ///
+    /// Rows in a `Form` only exist while on screen. This polls `exists` rather than `waitForExistence`:
+    /// a failed wait captures failure diagnostics, which can take over ten seconds on a CI simulator
+    /// and would exhaust the timeout before the list is scrolled. Short, slow swipes keep each step
+    /// within a screen so adjacent rows are not skipped; after a few upward swipes the search turns
+    /// back towards the top in case the element was above the starting position.
     @MainActor
-    @discardableResult
-    private func waitScrolling(
-        for element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval, direction: ScrollDirection = .up
-    ) -> Bool {
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let deadline = Date(timeIntervalSinceNow: timeout)
-        var swipes = 0
-        while true {
-            if element.waitForExistence(timeout: min(2, max(0.5, deadline.timeIntervalSinceNow))) {
+        var step = 0
+        while Date() < deadline {
+            if element.exists, element.isHittable {
                 return true
             }
-            guard Date() < deadline, swipes < 6 else { return false }
-            swipes += 1
-            switch direction {
-            case .up: app.swipeUp()
-            case .down: app.swipeDown()
+            if step % 8 < 4 {
+                app.swipeUp(velocity: .slow)
+            } else {
+                app.swipeDown(velocity: .slow)
             }
+            step += 1
         }
-    }
-
-    /// Scrolls until the element can be tapped.
-    @MainActor
-    private func scrollIntoView(_ element: XCUIElement, in app: XCUIApplication) {
-        var swipes = 0
-        while !element.isHittable, swipes < 6 {
-            app.swipeUp()
-            swipes += 1
-        }
-        if !element.isHittable {
-            swipes = 0
-            while !element.isHittable, swipes < 6 {
-                app.swipeDown()
-                swipes += 1
-            }
-        }
+        return element.exists && element.isHittable
     }
 }
