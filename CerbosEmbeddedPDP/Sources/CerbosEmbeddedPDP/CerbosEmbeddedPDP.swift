@@ -157,7 +157,8 @@ public final class CerbosEmbeddedPDP {
         ].joined(separator: "|")
     }
 
-    @ObservationIgnored private let host: CerbosWebViewHost
+    /// Internal so tests can check whether a start attempt created the web view.
+    @ObservationIgnored let host: CerbosWebViewHost
     @ObservationIgnored private let cache: PolicyBundleCache
     @ObservationIgnored private let resourcesError: CerbosError?
     /// Bumped by `stop()`, `reconfigure(_:)` and content process termination. A start attempt from an

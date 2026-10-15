@@ -47,9 +47,9 @@ struct ConfigurationValidationTests {
                 configuration.hubBaseURL = URL(string: "http://hub.example.com")!
                 return configuration
             }())
-        let started = ContinuousClock.now
         await pdp.start()
-        #expect(ContinuousClock.now - started < .seconds(2))
+        // No web view means the page never loaded, so nothing reached the network.
+        #expect(pdp.host.webView == nil)
         guard case .failed(.invalidRequest) = pdp.status else {
             Issue.record("expected a configuration failure, got \(pdp.status)")
             return
