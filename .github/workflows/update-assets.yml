@@ -1,0 +1,108 @@
+name: Update embedded assets
+
+# Weekly: move the Cerbos SDK packages to their latest releases, rebuild the bridge assets, and open
+# (or refresh) a pull request when anything in Resources/web changed. The Cerbos packages are 0.x, so
+# their caret ranges never cross a minor version; install @latest to pick up new minors too.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  BRANCH: automation/update-embedded-assets
+  WEB_DIR: CerbosEmbeddedPDP/Sources/CerbosEmbeddedPDP/Resources/web
+
+jobs:
+  update:
+    name: Rebuild assets and open a PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: CerbosBridge/package-lock.json
+
+      - name: Update the Cerbos packages
+        working-directory: CerbosBridge
+        run: |
+          cp "../$WEB_DIR/manifest.json" "$RUNNER_TEMP/manifest.before.json"
+          npm ci
+          npm install --save \
+            @cerbos/api@latest \
+            @cerbos/core@latest \
+            @cerbos/embedded-client@latest \
+            @cerbos/embedded-server@latest \
+            @bufbuild/protobuf@latest
+
+      - name: Build and smoke test
+        working-directory: CerbosBridge
+        run: |
+          npm run typecheck
+          npm run build
+          npm test
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet -- "$WEB_DIR"; then
+            echo "Embedded assets are up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "Rebuilt the embedded PDP assets from the latest Cerbos SDK releases."
+            echo
+            echo "| | Before | After |"
+            echo "| --- | --- | --- |"
+            jq -r --slurpfile after "$WEB_DIR/manifest.json" '
+              [ (.versions | keys[]) as $k | [$k, .versions[$k], $after[0].versions[$k]] ]
+              + [ ["Cerbos", .server.cerbosVersion, $after[0].server.cerbosVersion],
+                  ["server.wasm sha256", .wasm.sha256[0:12], $after[0].wasm.sha256[0:12]],
+                  ["bridge.js bytes", (.bridge.byteCount | tostring), ($after[0].bridge.byteCount | tostring)] ]
+              | .[] | "| `\(.[0])` | \(.[1] // "-") | \(.[2] // "-") |"
+            ' "$RUNNER_TEMP/manifest.before.json"
+            echo
+            echo "The bridge typecheck, build and smoke test against Cerbos Hub passed before this PR was opened."
+            echo "Created by the \`${{ github.workflow }}\` workflow."
+          } > "$RUNNER_TEMP/pr-body.md"
+          cat "$RUNNER_TEMP/pr-body.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the pull request
+        id: pr
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: ${{ env.BRANCH }}
+          delete-branch: true
+          add-paths: |
+            CerbosBridge/package.json
+            CerbosBridge/package-lock.json
+            ${{ env.WEB_DIR }}
+          commit-message: Update embedded PDP assets
+          title: Update embedded PDP assets
+          body-path: ${{ runner.temp }}/pr-body.md
+          labels: dependencies
+
+      # Pull requests opened with GITHUB_TOKEN do not trigger other workflows, but workflow_dispatch
+      # does, and its checks attach to the PR's head commit.
+      - name: Run CI on the pull request branch
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "$BRANCH"

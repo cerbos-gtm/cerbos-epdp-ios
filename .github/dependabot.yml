@@ -4,9 +4,11 @@ updates:
     directory: /CerbosBridge
     schedule:
       interval: weekly
+    # The Cerbos SDK packages change the committed assets; the "Update embedded assets" workflow bumps them.
+    ignore:
+      - dependency-name: "@cerbos/*"
+      - dependency-name: "@bufbuild/*"
     groups:
-      cerbos:
-        patterns: ["@cerbos/*", "@bufbuild/*"]
       tooling:
         patterns: ["esbuild", "typescript"]
   - package-ecosystem: github-actions
