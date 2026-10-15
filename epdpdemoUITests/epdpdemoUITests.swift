@@ -82,11 +82,13 @@ final class epdpdemoUITests: XCTestCase {
 
     /// Matches an element by identifier regardless of its accessibility type, which differs between
     /// SwiftUI containers and OS versions.
+    @MainActor
     private func element(withIdentifier identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
     /// Rows in a `Form` only exist while on screen, so waiting for one may need the list scrolled.
+    @MainActor
     @discardableResult
     private func waitScrolling(
         for element: XCUIElement, in app: XCUIApplication, timeout: TimeInterval, direction: ScrollDirection = .up
@@ -107,6 +109,7 @@ final class epdpdemoUITests: XCTestCase {
     }
 
     /// Scrolls until the element can be tapped.
+    @MainActor
     private func scrollIntoView(_ element: XCUIElement, in app: XCUIApplication) {
         var swipes = 0
         while !element.isHittable, swipes < 6 {
